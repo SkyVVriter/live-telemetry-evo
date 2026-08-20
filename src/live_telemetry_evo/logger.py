@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import csv
 import dataclasses
+import json
 import queue
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -205,7 +206,7 @@ class CsvLogger:
                     # Write JSON Manifest as comment header
                     manifest = {
                         "version": "2.0",
-                        "timestamp_utc": datetime.utcnow().isoformat() + "Z",
+                        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                         "session": {
                             "track_id": frame.engine.track_id or "unknown",
                             "track_config": frame.engine.track_config or "default",
