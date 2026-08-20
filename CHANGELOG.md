@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.2] - 2026-08-20
+
+### Added
+- **Догрузить оффлайн-сессии** in the AI Cloud Engineer settings dialog: scans `logs/` for CSV files that never got a successful upload marker and sends them (ignores the auto-upload checkbox).
+- Upload retries (5 attempts, exponential backoff) and a size-based HTTP timeout (min 3 min) so a 30–40 MB zip no longer dies on `urlopen error ... (_ssl.c:2427)` after 30 seconds.
+- Logger waits up to 5 s for AC Evo static `track` / `track_configuration` before writing the CSV manifest, and appends a `TELEMETRY MANIFEST FINAL` footer. Static block is re-read until track name and length appear.
+
+### Fixed
+- Auto-upload of a finished stint used a 30 s SSL write timeout — large zips failed after an offline or congested link and were never retried.
+
 ## [0.8.1] - 2026-08-20
 
 ### Fixed

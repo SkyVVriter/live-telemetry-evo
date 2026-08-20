@@ -770,6 +770,12 @@ class AcEvoTelemetrySource(TelemetrySource):
         try:
             phys = self._reader.read_physics()
             graphics = self._reader.read_graphics()
+            # Periodic static block re-read in case track name loads after session launch
+            if not self._frame.engine.track_id or self._frame.engine.track_length_m <= 0:
+                try:
+                    self._apply_static(self._reader.read_static())
+                except Exception:
+                    pass
         except (OSError, ValueError) as exc:
             log(f"[ac-evo] read failed, dropping connection: {exc}")
             self._reader.close()
@@ -818,7 +824,15 @@ class AcEvoTelemetrySource(TelemetrySource):
             e.track_id = raw_track
         if raw_cfg:
             e.track_config = raw_cfg
-        log(f"[ac-evo] static loaded: track={e.track_id!r}, layout={e.track_config!r}")
+        if st.track_length_m and st.track_length_m > 100.0:
+            e.track_length_m = float(st.track_length_m)
+        if abs(float(st.latitude)) > 0.1 or abs(float(st.longitude)) > 0.1:
+            e.track_latitude = float(st.latitude)
+            e.track_longitude = float(st.longitude)
+        log(
+            f"[ac-evo] static loaded: track={e.track_id!r}, layout={e.track_config!r}, "
+            f"length={e.track_length_m:.1f}m lat={e.track_latitude:.4f} lon={e.track_longitude:.4f}"
+        )
         del st
 
     def _update_kers_deploy(self, e) -> None:

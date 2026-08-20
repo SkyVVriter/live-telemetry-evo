@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,7 +27,7 @@ class CloudSettingsDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("AI Cloud Race Engineer — Настройки")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(520)
         self.setStyleSheet("""
             QDialog {
                 background-color: #161b22;
@@ -137,6 +137,22 @@ class CloudSettingsDialog(QDialog):
         test_layout.addStretch()
         main_layout.addLayout(test_layout)
 
+        offline_layout = QHBoxLayout()
+        self._offline_btn = QPushButton("Догрузить оффлайн-сессии")
+        self._offline_btn.setToolTip(
+            "Отправить локальные CSV из папки logs, которые не ушли из-за "
+            "оффлайна или обрыва SSL. Не зависит от галочки автозагрузки."
+        )
+        self._offline_btn.clicked.connect(self._on_upload_offline)
+        self._offline_status = QLabel("")
+        self._offline_status.setStyleSheet("font-size: 12px; color: #8b949e;")
+        self._offline_status.setWordWrap(True)
+        offline_layout.addWidget(self._offline_btn)
+        offline_layout.addWidget(self._offline_status, 1)
+        main_layout.addLayout(offline_layout)
+        self._offline_busy = False
+        self._refresh_offline_count()
+
         main_layout.addSpacing(10)
 
         # Bottom buttons
@@ -167,6 +183,62 @@ class CloudSettingsDialog(QDialog):
         else:
             self._test_status.setText(f"🔴 Ошибка: {msg}")
             self._test_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
+
+    def _refresh_offline_count(self) -> None:
+        n = len(CloudDispatcher.pending_session_files())
+        if self._offline_busy:
+            return
+        if n:
+            self._offline_status.setText(f"В очереди: {n} файл(ов)")
+            self._offline_status.setStyleSheet("font-size: 12px; color: #f0c14b;")
+        else:
+            self._offline_status.setText("Очередь пуста — все локальные логи уже загружены")
+            self._offline_status.setStyleSheet("font-size: 12px; color: #8b949e;")
+
+    def _on_upload_offline(self) -> None:
+        if self._offline_busy:
+            return
+        server = self._server_input.text().strip()
+        token = self._token_input.text().strip()
+        if not server or not token:
+            QMessageBox.warning(self, "Ошибка", "Сначала укажите адрес сервера и API токен.")
+            return
+        # Persist current form values so the worker thread reads them.
+        save_cloud_settings(
+            server_url=server,
+            api_token=token,
+            pilot_id=self._pilot_input.text().strip() or "Pilot",
+            auto_upload=self._auto_upload_cb.isChecked(),
+            coaching_profile=self._profile_combo.currentText().split(" ")[0],
+        )
+        pending = CloudDispatcher.pending_session_files()
+        if not pending:
+            self._offline_status.setText("Нечего загружать")
+            self._offline_status.setStyleSheet("font-size: 12px; color: #8b949e;")
+            return
+
+        self._offline_busy = True
+        self._offline_btn.setEnabled(False)
+        self._offline_status.setText(f"Загрузка 0/{len(pending)}…")
+        self._offline_status.setStyleSheet("font-size: 12px; color: #58a6ff;")
+
+        def on_progress(text: str) -> None:
+            QTimer.singleShot(0, lambda t=text: self._offline_status.setText(t))
+
+        def on_complete(ok_n: int, fail_n: int, summary: str) -> None:
+            def _done() -> None:
+                self._offline_busy = False
+                self._offline_btn.setEnabled(True)
+                color = "#2ecc71" if fail_n == 0 else "#f39c12"
+                self._offline_status.setStyleSheet(f"font-size: 12px; color: {color}; font-weight: bold;")
+                self._offline_status.setText(summary)
+                if fail_n:
+                    QMessageBox.warning(self, "Догрузка", summary)
+                else:
+                    QMessageBox.information(self, "Догрузка", summary)
+            QTimer.singleShot(0, _done)
+
+        CloudDispatcher.upload_pending_async(on_progress, on_complete)
 
     def _on_save(self) -> None:
         server = self._server_input.text().strip()

@@ -38,6 +38,7 @@ In addition to local CSV logging, this fork includes an automated **AI Cloud Eng
 2. Enter your backend Server URL (e.g., `https://your-server.com/telemetry-api`), your Pilot API Token and Pilot ID.
 3. Check **«Auto-upload telemetry on logging stop»**.
 4. Press `Ctrl+Shift+L` to start logging when leaving the pit lane and `Ctrl+Shift+L` when finishing the stint. The log file will be zipped and sent to the cloud backend asynchronously, generating interactive web reports and Telegram analysis alerts.
+5. If a stint was recorded offline or the upload failed (SSL timeout), open the same dialog and press **«Догрузить оффлайн-сессии»** — the client retries every local CSV that does not yet have a `.uploaded` marker.
 
 ### Option A — download and execute
 

@@ -163,6 +163,9 @@ class EngineData:
     car_model: str = ""            # vehicle identifier (e.g. "mazda_mx5_nd")
     track_id: str = ""             # track identifier (e.g. "nurburgring")
     track_config: str = ""         # track configuration (e.g. "sprint")
+    track_length_m: float = 0.0    # static-block layout length, metres
+    track_latitude: float = 0.0    # static-block circuit latitude
+    track_longitude: float = 0.0   # static-block circuit longitude
     driver_name: str = ""          # driver name
     # Phase 2 analog engine readouts (negative / zero = "not published");
     # the engine widget hides the cell when the value is non-positive.

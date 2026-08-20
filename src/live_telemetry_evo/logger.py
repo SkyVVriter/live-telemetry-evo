@@ -197,31 +197,79 @@ class CsvLogger:
                   buffering=8192) as fp:
             writer = csv.writer(fp)
             header_written = False
+            buffered: list[tuple[TelemetryFrame, float, float]] = []
+            header_deadline = time.monotonic() + 5.0
+            last_track = ""
+            last_cfg = ""
+            last_car = ""
+            last_driver = ""
+            started_utc = datetime.now(timezone.utc).isoformat()
+
+            def _flush_header() -> None:
+                nonlocal header_written
+                if header_written or not buffered:
+                    return
+                frame0 = buffered[-1][0]
+                manifest = {
+                    "version": "2.0",
+                    "timestamp_utc": started_utc,
+                    "session": {
+                        "track_id": last_track or frame0.engine.track_id or "unknown",
+                        "track_config": last_cfg or frame0.engine.track_config or "default",
+                    },
+                    "vehicle": {
+                        "car_id": last_car or frame0.engine.car_model or "unknown",
+                        "driver_name": last_driver or frame0.engine.driver_name or "Pilot",
+                    }
+                }
+                fp.write(f"# TELEMETRY MANIFEST: {json.dumps(manifest)}\n")
+                writer.writerow(_frame_columns(frame0))
+                for held, ts_unix, ts_mono in buffered:
+                    writer.writerow(_frame_row(held, ts_unix, ts_mono))
+                buffered.clear()
+                header_written = True
+
             while not self._stop_event.is_set() or not q.empty():
                 try:
                     frame = q.get(timeout=0.25)
                 except queue.Empty:
+                    if not header_written and buffered and (
+                        last_track or time.monotonic() >= header_deadline
+                    ):
+                        _flush_header()
                     continue
+                if frame.engine.track_id:
+                    last_track = frame.engine.track_id
+                if frame.engine.track_config:
+                    last_cfg = frame.engine.track_config
+                if frame.engine.car_model:
+                    last_car = frame.engine.car_model
+                if frame.engine.driver_name:
+                    last_driver = frame.engine.driver_name
                 if not header_written:
-                    # Write JSON Manifest as comment header
-                    manifest = {
-                        "version": "2.0",
-                        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                        "session": {
-                            "track_id": frame.engine.track_id or "unknown",
-                            "track_config": frame.engine.track_config or "default",
-                        },
-                        "vehicle": {
-                            "car_id": frame.engine.car_model or "unknown",
-                            "driver_name": frame.engine.driver_name or "Pilot",
-                        }
-                    }
-                    fp.write(f"# TELEMETRY MANIFEST: {json.dumps(manifest)}\n")
-                    writer.writerow(_frame_columns(frame))
-                    header_written = True
+                    buffered.append((frame, time.time(), time.monotonic()))
+                    if last_track or time.monotonic() >= header_deadline or self._stop_event.is_set():
+                        _flush_header()
+                    continue
                 writer.writerow(_frame_row(frame, time.time(), time.monotonic()))
                 rows_since_flush += 1
                 if rows_since_flush >= _FLUSH_EVERY_N_ROWS:
                     fp.flush()
                     rows_since_flush = 0
+            if not header_written:
+                _flush_header()
+            if last_track:
+                final_manifest = {
+                    "version": "2.0",
+                    "timestamp_utc": started_utc,
+                    "session": {
+                        "track_id": last_track or "unknown",
+                        "track_config": last_cfg or "default",
+                    },
+                    "vehicle": {
+                        "car_id": last_car or "unknown",
+                        "driver_name": last_driver or "Pilot",
+                    },
+                }
+                fp.write(f"# TELEMETRY MANIFEST FINAL: {json.dumps(final_manifest)}\n")
             fp.flush()
