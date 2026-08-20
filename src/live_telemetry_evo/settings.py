@@ -194,9 +194,9 @@ def save_vr_distance(meters: float) -> None:
 # AI Cloud Engineer & Multi-Tenant Telemetry Ingestion Settings
 # ---------------------------------------------------------------------------
 
-DEFAULT_CLOUD_SERVER = "https://your-server-domain.com/telemetry-api"
+DEFAULT_CLOUD_SERVER = ""
 DEFAULT_CLOUD_TOKEN = ""
-DEFAULT_PILOT_ID = "Pilot"
+DEFAULT_PILOT_ID = ""
 
 
 def load_cloud_settings() -> dict:

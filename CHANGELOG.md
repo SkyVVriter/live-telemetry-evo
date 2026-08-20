@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-08-20
+
+### Added
+- AI Cloud Race Engineer Platform integration for automated telemetry ingestion and coaching.
+- Metadata extraction from AC Evo `StaticView` and `GraphicsView` (track, track configuration, car model, driver name).
+- Accurate in-game lap counter, lap validity flag, and millisecond lap timing capture.
+- Telemetry manifest JSON header in CSV exports.
+- Qt6 Settings Dialog (`🏎️ AI Cloud Engineer...`) in system tray for configuring backend server, API token, pilot ID, and coaching profile with live connectivity test.
+- Asynchronous cloud dispatcher for background zip compression and upload without game stutter.
+
 ## [0.7.4] - 2026-08-02
 
 ### Fixed

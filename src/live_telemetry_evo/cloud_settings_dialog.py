@@ -98,11 +98,11 @@ class CloudSettingsDialog(QDialog):
 
         self._token_input = QLineEdit(cfg["api_token"])
         self._token_input.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
-        self._token_input.setPlaceholderText("Ваш токен доступа (Bearer Token)")
+        self._token_input.setPlaceholderText("Ваш Bearer токен")
         form.addRow("API Токен:", self._token_input)
 
         self._pilot_input = QLineEdit(cfg["pilot_id"])
-        self._pilot_input.setPlaceholderText("PilotName")
+        self._pilot_input.setPlaceholderText("Ваш позывной / Nickname")
         form.addRow("ID Пилота:", self._pilot_input)
 
         self._profile_combo = QComboBox()
