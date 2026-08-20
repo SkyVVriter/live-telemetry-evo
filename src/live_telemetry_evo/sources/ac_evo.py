@@ -725,6 +725,10 @@ class AcEvoTelemetrySource(TelemetrySource):
         # pylint: disable-next=no-member  # QTimer.timeout is a PySide6 Signal
         self._timer.timeout.connect(self._tick)
         self._reconnect_countdown = 0
+        # Re-read acevo_pmf_static about once a second. The block is written
+        # at session start, but the overlay used to skip later reads once
+        # track_id was filled — so a RBR → Laguna change kept the old name.
+        self._static_reread_countdown = 0
 
     def start(self) -> None:
         self._try_connect()
@@ -770,8 +774,16 @@ class AcEvoTelemetrySource(TelemetrySource):
         try:
             phys = self._reader.read_physics()
             graphics = self._reader.read_graphics()
-            # Periodic static block re-read in case track name loads after session launch
-            if not self._frame.engine.track_id or self._frame.engine.track_length_m <= 0:
+            # Re-read static until it fills, then keep polling so a track
+            # change in the same overlay process is picked up.
+            self._static_reread_countdown -= 1
+            need_static = (
+                not self._frame.engine.track_id
+                or self._frame.engine.track_length_m <= 0
+                or self._static_reread_countdown <= 0
+            )
+            if need_static:
+                self._static_reread_countdown = 60
                 try:
                     self._apply_static(self._reader.read_static())
                 except Exception:
@@ -818,6 +830,7 @@ class AcEvoTelemetrySource(TelemetrySource):
 
     def _apply_static(self, st: _SPageFileStatic) -> None:
         e = self._frame.engine
+        prev = (e.track_id, e.track_config, round(float(e.track_length_m or 0.0)))
         raw_track = bytes(st.track).rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
         raw_cfg = bytes(st.track_configuration).rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
         if raw_track:
@@ -829,10 +842,12 @@ class AcEvoTelemetrySource(TelemetrySource):
         if abs(float(st.latitude)) > 0.1 or abs(float(st.longitude)) > 0.1:
             e.track_latitude = float(st.latitude)
             e.track_longitude = float(st.longitude)
-        log(
-            f"[ac-evo] static loaded: track={e.track_id!r}, layout={e.track_config!r}, "
-            f"length={e.track_length_m:.1f}m lat={e.track_latitude:.4f} lon={e.track_longitude:.4f}"
-        )
+        now = (e.track_id, e.track_config, round(float(e.track_length_m or 0.0)))
+        if now != prev:
+            log(
+                f"[ac-evo] static loaded: track={e.track_id!r}, layout={e.track_config!r}, "
+                f"length={e.track_length_m:.1f}m lat={e.track_latitude:.4f} lon={e.track_longitude:.4f}"
+            )
         del st
 
     def _update_kers_deploy(self, e) -> None:

@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.4] - 2026-08-20
+
+### Fixed
+- AC Evo static shared memory is re-read about once a second, so changing track without restarting the overlay no longer keeps the previous circuit name (e.g. Red Bull Ring labelled a Laguna Seca stint).
+
 ## [0.8.3] - 2026-08-20
 
 ### Changed
