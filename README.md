@@ -31,6 +31,14 @@ and screenshots.
 
 ## Quick start
 
+### 🏎️ AI Cloud Engineer Auto-Upload (Assetto Corsa Evo)
+
+In addition to local CSV logging, this fork includes an automated **AI Cloud Engineer** ingestion pipeline:
+1. Open the System Tray, right click the icon and select **`🏎️ AI Cloud Engineer...`**.
+2. Enter your backend Server URL (e.g., `https://your-server.com/telemetry-api`), your Pilot API Token and Pilot ID.
+3. Check **«Auto-upload telemetry on logging stop»**.
+4. Press `Ctrl+Shift+L` to start logging when leaving the pit lane and `Ctrl+Shift+L` when finishing the stint. The log file will be zipped and sent to the cloud backend asynchronously, generating interactive web reports and Telegram analysis alerts.
+
 ### Option A — download and execute
 
 1. Go to the releases page the download the latest version from [GitHub](https://github.com/albertowd/live-telemetry-evo/releases) or [Overtake.gg](https://www.overtake.gg/downloads/live-telemetry-evo.84121/).
@@ -657,22 +665,24 @@ src/live_telemetry_evo/
 ├── __main__.py                # `python -m live_telemetry_evo` entry point
 ├── app.py                     # CLI parsing, layout + size cycling, threads the source
 ├── window.py                  # frameless / translucent / always-on-top window + Win32 hotkeys
-├── tray.py                    # system-tray icon + context menu (Data: Hz / logging; VR: placement / spread / distance; Windows: reset / click-through / size; update / quit)
+├── tray.py                    # system-tray icon + context menu (AI Cloud Engineer dialog, Data: Hz / logging; VR: placement / spread / distance; Windows: reset / click-through / size; update / quit)
 ├── updater.py                 # async GitHub-releases check + state-machine controller (idle / checking / downloading / restart)
 ├── layout.py                  # screen-size → multiplier and corner placements
-├── settings.py                # JSON-backed positions / visibility / size / polling-Hz persistence
+├── settings.py                # JSON-backed positions / visibility / size / polling-Hz persistence + Cloud Settings
 ├── paths.py                   # always-local config + logs folder resolution
 ├── frame_bus.py               # cross-thread TelemetryFrame transport (latest-snapshot + CSV queue)
-├── logger.py                  # CsvLogger — writer thread, schema auto-built from dataclasses
+├── logger.py                  # CsvLogger — writer thread with JSON Telemetry Manifest header
+├── cloud_dispatcher.py        # Background Zip compression & async HTTP multipart dispatcher to AI Race Engineer Gateway
+├── cloud_settings_dialog.py   # Qt6 GUI Dialog for Cloud Server URL, API Token, Pilot ID & Auto-Upload
 ├── colors.py                  # palette ported from lt_colors.py
 ├── fonts.py                   # explicit font family chain
 ├── interpolation.py           # Power, TirePsi, TireTemp interpolators
 ├── resources.py               # PNG load + scaled-mask cache + tint helper
-├── telemetry.py               # data shapes (TelemetryFrame / EngineData / WheelData)
+├── telemetry.py               # data shapes (TelemetryFrame / EngineData with session metadata / WheelData)
 ├── sources/
 │   ├── base.py                # TelemetrySource (Qt object, lives on a worker QThread)
 │   ├── synthetic.py           # mock data generator
-│   ├── ac_evo.py              # AC Evo shared-memory reader
+│   ├── ac_evo.py              # AC Evo shared-memory reader (extracts track, car, driver, lap timing)
 │   ├── ac1.py                 # original Assetto Corsa shared-memory reader (+ ACD parser)
 │   ├── ac1_acd.py             # decrypts `data.acd` to surface torque + tyre curves + ideal psi
 │   ├── acc.py                 # Assetto Corsa Competizione shared-memory reader
