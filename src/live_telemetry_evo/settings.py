@@ -188,3 +188,47 @@ def save_vr_distance(meters: float) -> None:
     data = _read()
     data["vr_distance"] = float(meters)
     _write(data)
+
+
+# ---------------------------------------------------------------------------
+# AI Cloud Engineer & Multi-Tenant Telemetry Ingestion Settings
+# ---------------------------------------------------------------------------
+
+DEFAULT_CLOUD_SERVER = "https://skw-memora.duckdns.org/telemetry-api"
+DEFAULT_CLOUD_TOKEN = ""
+DEFAULT_PILOT_ID = "SkyVVriter"
+
+
+def load_cloud_settings() -> dict:
+    """Load settings for AI Cloud Telemetry Server and Dispatcher."""
+    data = _read()
+    cloud = data.get("cloud", {})
+    if not isinstance(cloud, dict):
+        cloud = {}
+    return {
+        "server_url": str(cloud.get("server_url", DEFAULT_CLOUD_SERVER)),
+        "api_token": str(cloud.get("api_token", DEFAULT_CLOUD_TOKEN)),
+        "pilot_id": str(cloud.get("pilot_id", DEFAULT_PILOT_ID)),
+        "auto_upload": bool(cloud.get("auto_upload", True)),
+        "coaching_profile": str(cloud.get("coaching_profile", "TimeAttack")),
+    }
+
+
+def save_cloud_settings(
+    server_url: str,
+    api_token: str,
+    pilot_id: str,
+    auto_upload: bool = True,
+    coaching_profile: str = "TimeAttack",
+) -> None:
+    """Persist settings for AI Cloud Telemetry Server."""
+    data = _read()
+    data["cloud"] = {
+        "server_url": server_url.rstrip("/"),
+        "api_token": api_token.strip(),
+        "pilot_id": pilot_id.strip(),
+        "auto_upload": bool(auto_upload),
+        "coaching_profile": str(coaching_profile),
+    }
+    _write(data)
+

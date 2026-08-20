@@ -811,12 +811,14 @@ class AcEvoTelemetrySource(TelemetrySource):
         self._last_kers_tick = None
 
     def _apply_static(self, st: _SPageFileStatic) -> None:
-        # AC Evo's static block is session/track metadata only — the AC1
-        # car-spec fields (maxRpm/Power/Torque, suspensionMaxTravel) are
-        # gone. The overlay sources its peaks from graphics (current_bhp,
-        # rpm_percent, max_turbo_boost) and from rolling-max calibration in
-        # physics, so there is nothing to apply here yet. Track name /
-        # ambient temperature could feed future widgets.
+        e = self._frame.engine
+        raw_track = bytes(st.track).rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
+        raw_cfg = bytes(st.track_configuration).rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
+        if raw_track:
+            e.track_id = raw_track
+        if raw_cfg:
+            e.track_config = raw_cfg
+        log(f"[ac-evo] static loaded: track={e.track_id!r}, layout={e.track_config!r}")
         del st
 
     def _update_kers_deploy(self, e) -> None:
@@ -1088,6 +1090,20 @@ class AcEvoTelemetrySource(TelemetrySource):
         e.wrong_way = bool(gr.is_wrong_way)
         e.valid_lap = bool(gr.is_valid_lap)
         e.last_lap = bool(gr.is_last_lap)
+
+        # In-game lap timing and metadata
+        e.current_lap = int(gr.total_lap_count)
+        e.last_lap_time_ms = int(gr.last_laptime_ms)
+        e.best_lap_time_ms = int(gr.best_laptime_ms)
+
+        raw_car = bytes(gr.car_model).rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
+        if raw_car:
+            e.car_model = raw_car
+        raw_driver = bytes(gr.driver_name).rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
+        raw_surname = bytes(gr.driver_surname).rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
+        full_driver = f"{raw_driver} {raw_surname}".strip()
+        if full_driver:
+            e.driver_name = full_driver
 
         # Phase 2 — analog engine readouts. The graphics block stores
         # water/air temps as int8 °C; cast to float so downstream code

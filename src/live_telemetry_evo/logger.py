@@ -162,6 +162,7 @@ class CsvLogger:
         # writer's blocking get() unblocks via the sentinel below.
         self._bus.disable_csv()
         t = self._thread
+        saved_path = self._path
         if t is not None:
             # Wake the writer if it's blocked on get() with an empty queue.
             try:
@@ -175,6 +176,15 @@ class CsvLogger:
             t.join(timeout=2.0)
         self._thread = None
         self._active = False
+
+        # Async dispatch to AI Cloud Telemetry Server if enabled
+        if saved_path and saved_path.exists() and saved_path.stat().st_size > 1024:
+            try:
+                from .cloud_dispatcher import CloudDispatcher
+                CloudDispatcher.upload_async(saved_path)
+            except Exception as e:
+                pass
+
 
     def _run(self, q: "queue.Queue[TelemetryFrame]") -> None:
         # Build header lazily from the first frame so we capture the
@@ -192,6 +202,20 @@ class CsvLogger:
                 except queue.Empty:
                     continue
                 if not header_written:
+                    # Write JSON Manifest as comment header
+                    manifest = {
+                        "version": "2.0",
+                        "timestamp_utc": datetime.utcnow().isoformat() + "Z",
+                        "session": {
+                            "track_id": frame.engine.track_id or "unknown",
+                            "track_config": frame.engine.track_config or "default",
+                        },
+                        "vehicle": {
+                            "car_id": frame.engine.car_model or "unknown",
+                            "driver_name": frame.engine.driver_name or "SkyVVriter",
+                        }
+                    }
+                    fp.write(f"# TELEMETRY MANIFEST: {json.dumps(manifest)}\n")
                     writer.writerow(_frame_columns(frame))
                     header_written = True
                 writer.writerow(_frame_row(frame, time.time(), time.monotonic()))

@@ -157,6 +157,13 @@ class EngineData:
     wrong_way: bool = False        # driver going against direction
     valid_lap: bool = True         # False after a cut invalidates the lap
     last_lap: bool = False         # final lap of the session
+    current_lap: int = 1           # live in-game lap counter from graphics
+    last_lap_time_ms: int = 0      # official last completed lap time in ms
+    best_lap_time_ms: int = 0      # official session best lap time in ms
+    car_model: str = ""            # vehicle identifier (e.g. "mazda_mx5_nd")
+    track_id: str = ""             # track identifier (e.g. "nurburgring")
+    track_config: str = ""         # track configuration (e.g. "sprint")
+    driver_name: str = ""          # driver name
     # Phase 2 analog engine readouts (negative / zero = "not published");
     # the engine widget hides the cell when the value is non-positive.
     water_temp_c: float = 0.0

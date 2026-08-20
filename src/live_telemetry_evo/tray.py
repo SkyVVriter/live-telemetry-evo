@@ -294,6 +294,16 @@ def make_tray(
 
     menu.addSeparator()
 
+    # ---- AI Cloud Race Engineer settings dialog action ------------------
+    def _open_cloud_settings():
+        from .cloud_settings_dialog import CloudSettingsDialog
+        dlg = CloudSettingsDialog(parent)
+        dlg.exec()
+
+    cloud_settings_action = QAction("🏎️ AI Cloud Engineer...", menu)
+    cloud_settings_action.triggered.connect(_open_cloud_settings)
+    menu.addAction(cloud_settings_action)
+
     update_action: QAction | None = None
     if updater is not None:
         text, enabled = _UPDATE_LABELS[updater.state]
