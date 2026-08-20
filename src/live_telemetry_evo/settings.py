@@ -194,9 +194,9 @@ def save_vr_distance(meters: float) -> None:
 # AI Cloud Engineer & Multi-Tenant Telemetry Ingestion Settings
 # ---------------------------------------------------------------------------
 
-DEFAULT_CLOUD_SERVER = "https://skw-memora.duckdns.org/telemetry-api"
+DEFAULT_CLOUD_SERVER = "https://your-server-domain.com/telemetry-api"
 DEFAULT_CLOUD_TOKEN = ""
-DEFAULT_PILOT_ID = "SkyVVriter"
+DEFAULT_PILOT_ID = "Pilot"
 
 
 def load_cloud_settings() -> dict:
@@ -209,7 +209,7 @@ def load_cloud_settings() -> dict:
         "server_url": str(cloud.get("server_url", DEFAULT_CLOUD_SERVER)),
         "api_token": str(cloud.get("api_token", DEFAULT_CLOUD_TOKEN)),
         "pilot_id": str(cloud.get("pilot_id", DEFAULT_PILOT_ID)),
-        "auto_upload": bool(cloud.get("auto_upload", True)),
+        "auto_upload": bool(cloud.get("auto_upload", False)),
         "coaching_profile": str(cloud.get("coaching_profile", "TimeAttack")),
     }
 

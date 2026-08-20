@@ -93,7 +93,7 @@ class CloudSettingsDialog(QDialog):
         form.setSpacing(10)
 
         self._server_input = QLineEdit(cfg["server_url"])
-        self._server_input.setPlaceholderText("https://skw-memora.duckdns.org/telemetry-api")
+        self._server_input.setPlaceholderText("https://your-server.com/telemetry-api")
         form.addRow("Сервер API:", self._server_input)
 
         self._token_input = QLineEdit(cfg["api_token"])
@@ -102,7 +102,7 @@ class CloudSettingsDialog(QDialog):
         form.addRow("API Токен:", self._token_input)
 
         self._pilot_input = QLineEdit(cfg["pilot_id"])
-        self._pilot_input.setPlaceholderText("SkyVVriter")
+        self._pilot_input.setPlaceholderText("PilotName")
         form.addRow("ID Пилота:", self._pilot_input)
 
         self._profile_combo = QComboBox()

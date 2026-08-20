@@ -212,7 +212,7 @@ class CsvLogger:
                         },
                         "vehicle": {
                             "car_id": frame.engine.car_model or "unknown",
-                            "driver_name": frame.engine.driver_name or "SkyVVriter",
+                            "driver_name": frame.engine.driver_name or "Pilot",
                         }
                     }
                     fp.write(f"# TELEMETRY MANIFEST: {json.dumps(manifest)}\n")
