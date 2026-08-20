@@ -42,7 +42,7 @@ In addition to local CSV logging, this fork includes an automated **AI Cloud Eng
 
 ### Option A — download and execute
 
-1. Go to the releases page the download the latest version from [GitHub](https://github.com/albertowd/live-telemetry-evo/releases) or [Overtake.gg](https://www.overtake.gg/downloads/live-telemetry-evo.84121/).
+1. Go to the releases page the download the latest version from [GitHub](https://github.com/SkyVVriter/live-telemetry-evo/releases) or [Overtake.gg](https://www.overtake.gg/downloads/live-telemetry-evo.84121/).
 2. Double-click on it with the session already running so it auto detects which
    game to load the data from.
 3. Use `Ctrl+Shift+C` (or **Windows → Click-through** in the tray) to unlock
@@ -334,7 +334,7 @@ their entries).
 ### Auto-update
 
 On launch the overlay asynchronously queries
-`github.com/albertowd/live-telemetry-evo/releases/latest` (which serves
+`github.com/SkyVVriter/live-telemetry-evo/releases/latest` (which serves
 the latest tag as JSON — `api.github.com` is deliberately avoided since
 some networks block it).
 If the tag is newer than the running version it downloads the matching

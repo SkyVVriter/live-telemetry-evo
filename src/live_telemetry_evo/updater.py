@@ -1,7 +1,7 @@
 """Async update check against GitHub releases.
 
 On startup the app queries
-``https://github.com/albertowd/live-telemetry-evo/releases/latest`` (the
+``https://github.com/SkyVVriter/live-telemetry-evo/releases/latest`` (the
 releases page serves the latest tag as JSON) and, if the tag is newer
 than the running version, downloads the matching
 ``LiveTelemetryEvo-<version>.exe`` asset into the same folder as the
@@ -41,7 +41,7 @@ from .logbook import log
 # asked for JSON; the asset URL (``<releases>/download/<tag>/<asset>``)
 # is rebuilt from the release naming convention since the page JSON
 # carries no asset list.
-GITHUB_RELEASES_URL = "https://github.com/albertowd/live-telemetry-evo/releases"
+GITHUB_RELEASES_URL = "https://github.com/SkyVVriter/live-telemetry-evo/releases"
 HTTP_TIMEOUT_S = 10
 USER_AGENT = "live-telemetry-evo-updater"
 
