@@ -49,6 +49,11 @@ from ._win32_mapping import NamedMapping as _NamedMapping
 from .base import TelemetrySource
 
 
+def _c_str(value) -> str:
+    """Decode a ctypes c_char array, stripping NULs."""
+    return bytes(value).rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
+
+
 # Shared-memory tag names. The "Local\" namespace prefix is required on
 # Windows; mmap's tagname argument accepts the bare name and prefixes Local\
 # automatically, but AC Evo publishes under the explicit prefix and we match
@@ -830,9 +835,10 @@ class AcEvoTelemetrySource(TelemetrySource):
 
     def _apply_static(self, st: _SPageFileStatic) -> None:
         e = self._frame.engine
-        prev = (e.track_id, e.track_config, round(float(e.track_length_m or 0.0)))
-        raw_track = bytes(st.track).rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
-        raw_cfg = bytes(st.track_configuration).rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
+        prev = (e.track_id, e.track_config, round(float(e.track_length_m or 0.0)),
+                e.session_type, e.starting_grip)
+        raw_track = _c_str(st.track)
+        raw_cfg = _c_str(st.track_configuration)
         if raw_track:
             e.track_id = raw_track
         if raw_cfg:
@@ -842,11 +848,27 @@ class AcEvoTelemetrySource(TelemetrySource):
         if abs(float(st.latitude)) > 0.1 or abs(float(st.longitude)) > 0.1:
             e.track_latitude = float(st.latitude)
             e.track_longitude = float(st.longitude)
-        now = (e.track_id, e.track_config, round(float(e.track_length_m or 0.0)))
+        e.session_type = int(st.session)
+        raw_sname = _c_str(st.session_name)
+        if raw_sname:
+            e.session_name = raw_sname
+        e.is_timed_race = bool(st.is_timed_race)
+        e.is_online = bool(st.is_online)
+        e.starting_grip = int(st.starting_grip)
+        e.static_weather = bool(st.is_static_weather)
+        if abs(float(st.starting_ambient_temperature_c)) > 0.01:
+            e.starting_air_temp_c = float(st.starting_ambient_temperature_c)
+        if abs(float(st.starting_ground_temperature_c)) > 0.01:
+            e.starting_road_temp_c = float(st.starting_ground_temperature_c)
+        now = (e.track_id, e.track_config, round(float(e.track_length_m or 0.0)),
+               e.session_type, e.starting_grip)
         if now != prev:
             log(
                 f"[ac-evo] static loaded: track={e.track_id!r}, layout={e.track_config!r}, "
-                f"length={e.track_length_m:.1f}m lat={e.track_latitude:.4f} lon={e.track_longitude:.4f}"
+                f"length={e.track_length_m:.1f}m session={e.session_type}/{e.session_name!r} "
+                f"grip={e.starting_grip} air={e.starting_air_temp_c:.1f}C "
+                f"road={e.starting_road_temp_c:.1f}C static_wx={e.static_weather} "
+                f"online={e.is_online} timed_race={e.is_timed_race}"
             )
         del st
 
@@ -962,6 +984,10 @@ class AcEvoTelemetrySource(TelemetrySource):
         i.g_vert = float(ph.accG[2])
         i.damage = tuple(float(ph.carDamage[k]) for k in range(5))
         i.tyres_out = int(ph.numberOfTyresOut)
+        if abs(float(ph.airTemp)) > 0.01:
+            e.air_temp_c = float(ph.airTemp)
+        if abs(float(ph.roadTemp)) > 0.01:
+            e.road_temp_c = float(ph.roadTemp)
 
         braking = ph.brake > 0.0
         # Use the merged in-action flag (graphics bool OR physics int OR
@@ -1124,6 +1150,11 @@ class AcEvoTelemetrySource(TelemetrySource):
         e.current_lap = int(gr.total_lap_count)
         e.last_lap_time_ms = int(gr.last_laptime_ms)
         e.best_lap_time_ms = int(gr.best_laptime_ms)
+        e.tod_hours = int(gr.time_of_day_hours)
+        e.tod_minutes = int(gr.time_of_day_minutes)
+        e.tod_seconds = int(gr.time_of_day_seconds)
+        if e.air_temp_c == 0.0 and int(gr.air_temperature_c) != 0:
+            e.air_temp_c = float(gr.air_temperature_c)
 
         raw_car = bytes(gr.car_model).rstrip(b"\x00").decode("utf-8", errors="ignore").strip()
         if raw_car:

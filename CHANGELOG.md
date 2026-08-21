@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.5] - 2026-08-21
+
+### Added
+- AC Evo CSV manifest now records session type (`session` enum + `session_name`), online/timed-race flags, starting grip, air/road temperatures, static-weather flag, and time of day.
+- The same fields are copied onto each telemetry frame (`engine.session_*`, `engine.air_temp_c`, `engine.road_temp_c`, …) so they appear as CSV columns and survive a mid-stint car change.
+
 ## [0.8.4] - 2026-08-20
 
 ### Fixed

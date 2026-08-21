@@ -5,6 +5,32 @@ from dataclasses import dataclass, field
 
 WHEEL_IDS = ("FL", "FR", "RL", "RR")
 
+# Session/track identity that must survive ``TelemetryFrame.reset_for_car``.
+# Those fields come from the static block (or slow graphics clocks), not
+# from the car spec sheet, so wiping them on a car swap would blank the
+# CSV manifest until the next static re-read.
+ENGINE_SESSION_FIELDS = (
+    "track_id",
+    "track_config",
+    "track_length_m",
+    "track_latitude",
+    "track_longitude",
+    "driver_name",
+    "session_type",
+    "session_name",
+    "is_timed_race",
+    "is_online",
+    "starting_grip",
+    "static_weather",
+    "starting_air_temp_c",
+    "starting_road_temp_c",
+    "air_temp_c",
+    "road_temp_c",
+    "tod_hours",
+    "tod_minutes",
+    "tod_seconds",
+)
+
 
 @dataclass
 class WheelData:
@@ -167,6 +193,23 @@ class EngineData:
     track_latitude: float = 0.0    # static-block circuit latitude
     track_longitude: float = 0.0   # static-block circuit longitude
     driver_name: str = ""          # driver name
+    # Session type / weather from AC Evo static + live physics/graphics.
+    # Enum integers are stored raw (ACEVO_SESSION_TYPE / STARTING_GRIP);
+    # numeric values are still being confirmed against live dumps, so
+    # consumers should prefer ``session_name`` and keep the int as-is.
+    session_type: int = -1         # static.session; -1 = unknown
+    session_name: str = ""         # static.session_name (UI label)
+    is_timed_race: bool = False
+    is_online: bool = False
+    starting_grip: int = -1        # static.starting_grip; -1 = unknown
+    static_weather: bool = False   # True = weather frozen for the stint
+    starting_air_temp_c: float = 0.0
+    starting_road_temp_c: float = 0.0
+    air_temp_c: float = 0.0        # live physics.airTemp (else graphics)
+    road_temp_c: float = 0.0       # live physics.roadTemp
+    tod_hours: int = -1            # graphics time of day, -1 = unknown
+    tod_minutes: int = -1
+    tod_seconds: int = -1
     # Phase 2 analog engine readouts (negative / zero = "not published");
     # the engine widget hides the cell when the value is non-positive.
     water_temp_c: float = 0.0
@@ -285,6 +328,7 @@ class TelemetryFrame:
         """
         self.car_id = car_id
         self.car_epoch += 1
-        self.engine = EngineData(car_epoch=self.car_epoch)
+        kept = {name: getattr(self.engine, name) for name in ENGINE_SESSION_FIELDS}
+        self.engine = EngineData(car_epoch=self.car_epoch, **kept)
         self.inputs = InputsData()
         self.wheels = {w: WheelData(car_epoch=self.car_epoch) for w in WHEEL_IDS}

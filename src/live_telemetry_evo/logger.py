@@ -32,6 +32,54 @@ from .frame_bus import FrameBus
 from .paths import logs_dir as _resolve_logs_dir
 from .telemetry import EngineData, InputsData, TelemetryFrame, WHEEL_IDS, WheelData
 
+MANIFEST_VERSION = "2.1"
+
+
+def _time_of_day(engine: Optional[EngineData]) -> str:
+    if engine is None:
+        return ""
+    if engine.tod_hours < 0 or engine.tod_minutes < 0 or engine.tod_seconds < 0:
+        return ""
+    return f"{engine.tod_hours:02d}:{engine.tod_minutes:02d}:{engine.tod_seconds:02d}"
+
+
+def build_telemetry_manifest(
+    started_utc: str,
+    track_id: str,
+    track_config: str,
+    car_id: str,
+    driver_name: str,
+    engine: Optional[EngineData] = None,
+) -> dict[str, Any]:
+    """Session snapshot written as the CSV header/footer JSON comment."""
+    session: dict[str, Any] = {
+        "track_id": track_id or "unknown",
+        "track_config": track_config or "default",
+    }
+    if engine is not None:
+        session.update({
+            "session_type": engine.session_type,
+            "session_name": engine.session_name,
+            "is_timed_race": bool(engine.is_timed_race),
+            "is_online": bool(engine.is_online),
+            "grip": engine.starting_grip,
+            "static_weather": bool(engine.static_weather),
+            "starting_air_temp_c": round(float(engine.starting_air_temp_c or 0.0), 2),
+            "starting_road_temp_c": round(float(engine.starting_road_temp_c or 0.0), 2),
+            "air_temp_c": round(float(engine.air_temp_c or 0.0), 2),
+            "road_temp_c": round(float(engine.road_temp_c or 0.0), 2),
+            "time_of_day": _time_of_day(engine),
+        })
+    return {
+        "version": MANIFEST_VERSION,
+        "timestamp_utc": started_utc,
+        "session": session,
+        "vehicle": {
+            "car_id": car_id or "unknown",
+            "driver_name": driver_name or "Pilot",
+        },
+    }
+
 
 # Fields whose value is a list/dict and would explode the column count
 # without giving useful per-frame signal. Per-car static tables, not
@@ -203,6 +251,7 @@ class CsvLogger:
             last_cfg = ""
             last_car = ""
             last_driver = ""
+            last_engine: Optional[EngineData] = None
             started_utc = datetime.now(timezone.utc).isoformat()
 
             def _flush_header() -> None:
@@ -210,18 +259,14 @@ class CsvLogger:
                 if header_written or not buffered:
                     return
                 frame0 = buffered[-1][0]
-                manifest = {
-                    "version": "2.0",
-                    "timestamp_utc": started_utc,
-                    "session": {
-                        "track_id": last_track or frame0.engine.track_id or "unknown",
-                        "track_config": last_cfg or frame0.engine.track_config or "default",
-                    },
-                    "vehicle": {
-                        "car_id": last_car or frame0.engine.car_model or "unknown",
-                        "driver_name": last_driver or frame0.engine.driver_name or "Pilot",
-                    }
-                }
+                manifest = build_telemetry_manifest(
+                    started_utc,
+                    last_track or frame0.engine.track_id,
+                    last_cfg or frame0.engine.track_config,
+                    last_car or frame0.engine.car_model,
+                    last_driver or frame0.engine.driver_name,
+                    last_engine or frame0.engine,
+                )
                 fp.write(f"# TELEMETRY MANIFEST: {json.dumps(manifest)}\n")
                 writer.writerow(_frame_columns(frame0))
                 for held, ts_unix, ts_mono in buffered:
@@ -246,6 +291,7 @@ class CsvLogger:
                     last_car = frame.engine.car_model
                 if frame.engine.driver_name:
                     last_driver = frame.engine.driver_name
+                last_engine = frame.engine
                 if not header_written:
                     buffered.append((frame, time.time(), time.monotonic()))
                     if last_track or time.monotonic() >= header_deadline or self._stop_event.is_set():
@@ -259,17 +305,13 @@ class CsvLogger:
             if not header_written:
                 _flush_header()
             if last_track:
-                final_manifest = {
-                    "version": "2.0",
-                    "timestamp_utc": started_utc,
-                    "session": {
-                        "track_id": last_track or "unknown",
-                        "track_config": last_cfg or "default",
-                    },
-                    "vehicle": {
-                        "car_id": last_car or "unknown",
-                        "driver_name": last_driver or "Pilot",
-                    },
-                }
+                final_manifest = build_telemetry_manifest(
+                    started_utc,
+                    last_track,
+                    last_cfg,
+                    last_car,
+                    last_driver,
+                    last_engine,
+                )
                 fp.write(f"# TELEMETRY MANIFEST FINAL: {json.dumps(final_manifest)}\n")
             fp.flush()
