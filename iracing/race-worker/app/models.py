@@ -29,6 +29,7 @@ class EventType(str, Enum):
     flag_black = "flag_black"
     flag_blue = "flag_blue"
     flag_dq = "flag_dq"
+    driver_feedback = "driver_feedback"
 
 
 class Priority(str, Enum):
