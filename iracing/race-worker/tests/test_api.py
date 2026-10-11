@@ -29,9 +29,9 @@ class TestHealth:
 
 
 class TestAuth:
-    def test_no_token_returns_403(self, client):
+    def test_no_token_returns_401(self, client):
         r = client.post("/race/sessions", json={"sim": "iR", "track_id": "1", "track_name": "t", "car": "c"})
-        assert r.status_code == 403
+        assert r.status_code == 401
 
     def test_bad_token_returns_401(self, client):
         r = client.post("/race/sessions", json={"sim": "iR", "track_id": "1", "track_name": "t", "car": "c"},

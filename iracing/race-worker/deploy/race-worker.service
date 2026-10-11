@@ -30,7 +30,7 @@ RestrictRealtime=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
-ReadWritePaths=/opt/race-worker/data
+ReadWritePaths=/opt/race-worker/data /var/lib/race-worker
 
 [Install]
 WantedBy=multi-user.target

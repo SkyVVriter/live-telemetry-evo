@@ -1,6 +1,10 @@
 # Add this block BEFORE the existing catch-all reverse_proxy in your
 # site block for acevo-ai.duckdns.org.
 #
+# NOTE: With `admin off` in the global options block, `caddy reload`
+# cannot reach the admin API. Use `sudo systemctl restart caddy`
+# instead of `caddy reload` whenever you change the Caddyfile.
+#
 # Example full Caddyfile structure:
 #
 #   acevo-ai.duckdns.org {

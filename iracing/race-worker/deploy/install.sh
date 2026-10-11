@@ -13,7 +13,7 @@ echo "=== race-worker install ==="
 
 # 1. System user
 if ! id "$SVC_USER" &>/dev/null; then
-    useradd --system --shell /usr/sbin/nologin --home-dir "$APP_DIR" "$SVC_USER"
+    /usr/sbin/useradd --system --shell /usr/sbin/nologin --home-dir "$APP_DIR" "$SVC_USER"
     echo "Created user $SVC_USER"
 else
     echo "User $SVC_USER already exists"
