@@ -43,11 +43,26 @@ def _request(method: str, url: str, token: str,
         return json.loads(raw) if raw.strip() else {}
 
 
+def _normalize_base_url(url: str) -> str:
+    """Accept URLs with or without trailing ``/race`` (and trailing slash).
+
+    The API endpoints all live under ``<base>/race/...``, so the caller
+    should be able to pass ``https://host``, ``https://host/``,
+    ``https://host/race``, or ``https://host/race/`` and get the same
+    result.  We strip any trailing ``/race`` suffix so the rest of the
+    class can unconditionally prepend ``/race/...``.
+    """
+    url = url.strip().rstrip("/")
+    if url.endswith("/race"):
+        url = url[:-5].rstrip("/")
+    return url
+
+
 class RaceWorkerClient:
     """Thread-safe client for the race-worker REST API."""
 
     def __init__(self, base_url: str = "", token: str = "") -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = _normalize_base_url(base_url)
         self.token = token
         self._session_id: Optional[str] = None
         self._stop = threading.Event()
@@ -56,7 +71,7 @@ class RaceWorkerClient:
         self._last_event_id: int = 0
 
     def configure(self, base_url: str, token: str) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = _normalize_base_url(base_url)
         self.token = token
 
     @staticmethod

@@ -31,7 +31,9 @@ def main():
     parser.add_argument("--laps", type=int, default=10)
     args = parser.parse_args()
 
-    base = args.base_url.rstrip("/")
+    base = args.base_url.strip().rstrip("/")
+    if base.endswith("/race"):
+        base = base[:-5].rstrip("/")
     app_h = {"Authorization": f"Bearer {args.app_token}"}
     asst_h = {"Authorization": f"Bearer {args.assistant_token}"}
 
