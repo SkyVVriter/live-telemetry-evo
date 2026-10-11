@@ -1,12 +1,12 @@
 """Async update check against GitHub releases.
 
-On startup the app queries
-``https://github.com/albertowd/live-telemetry-evo/releases/latest`` (the
-releases page serves the latest tag as JSON) and, if the tag is newer
-than the running version, downloads the matching
-``LiveTelemetryEvo-<version>.exe`` asset into the same folder as the
-running executable. The user sees a system-tray balloon when
-the download finishes; failures are silent.
+On startup the app queries the GitHub releases page for
+``SkyVVriter/live-telemetry-evo`` and, if the tag is newer than the
+running version, downloads the matching ``LiveTelemetryEvo-<version>.exe``
+asset into the same folder as the running executable. The downloaded
+file's SHA256 hash is verified against ``SHA256SUMS.txt`` from the same
+release; the file is rejected on mismatch. The user sees a system-tray
+balloon when the download finishes; failures are silent.
 
 Re-downloads are skipped — if a file with the asset's filename already
 exists next to the .exe (from a previous run), we leave it alone.
@@ -16,9 +16,20 @@ controller's state machine — Checking… / Downloading… / Restart to
 Update — and offers a manual re-check from the IDLE state. The
 restart path launches the downloaded .exe detached, then quits the
 current process so the new build can attach to the same SHM tags.
+
+Release channels
+~~~~~~~~~~~~~~~~
+Setting ``release_channel`` in ``positions.json`` (via settings helpers)
+controls which releases the updater considers:
+
+* ``"prod"`` (default) — only full releases (no pre-release suffix).
+* ``"test"`` — pre-releases whose tag matches ``v*-test*``
+  (e.g. ``v0.9.0-test.3``). When on the test channel the updater picks
+  the highest version including semver pre-release ordering.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import ssl  # imported eagerly so PyInstaller bundles _ssl + OpenSSL DLLs
@@ -35,26 +46,79 @@ from PySide6.QtWidgets import QApplication
 from .logbook import log
 
 
-# The check deliberately avoids ``api.github.com`` — it's unreachable on
-# some networks where ``github.com`` itself works (DNS interception /
-# filtering). ``<releases>/latest`` returns ``{"tag_name": ...}`` when
-# asked for JSON; the asset URL (``<releases>/download/<tag>/<asset>``)
-# is rebuilt from the release naming convention since the page JSON
-# carries no asset list.
-GITHUB_RELEASES_URL = "https://github.com/albertowd/live-telemetry-evo/releases"
+GITHUB_RELEASES_URL = "https://github.com/SkyVVriter/live-telemetry-evo/releases"
 HTTP_TIMEOUT_S = 10
 USER_AGENT = "live-telemetry-evo-updater"
 
 
-def _parse_version(s: str) -> Optional[tuple[int, int, int]]:
-    """Strip a leading ``v`` and parse a ``X.Y.Z`` triple. Returns
-    ``None`` if the string doesn't carry a recognisable version
-    (pre-release suffixes like ``-rc1`` are tolerated but ignored)."""
+class SemVer:
+    """Semantic version with optional pre-release component for proper
+    ordering per the semver spec: release > pre-release, and pre-release
+    identifiers are compared numerically when both are digits."""
+
+    __slots__ = ("major", "minor", "patch", "pre")
+
+    def __init__(self, major: int, minor: int, patch: int,
+                 pre: tuple[str, ...] = ()) -> None:
+        self.major = major
+        self.minor = minor
+        self.patch = patch
+        self.pre = pre
+
+    def _cmp_key(self):
+        if not self.pre:
+            return (self.major, self.minor, self.patch, 1, ())
+        converted = []
+        for part in self.pre:
+            if part.isdigit():
+                converted.append((0, int(part)))
+            else:
+                converted.append((1, part))
+        return (self.major, self.minor, self.patch, 0, tuple(converted))
+
+    def __eq__(self, other):
+        if not isinstance(other, SemVer):
+            return NotImplemented
+        return self._cmp_key() == other._cmp_key()
+
+    def __lt__(self, other):
+        if not isinstance(other, SemVer):
+            return NotImplemented
+        return self._cmp_key() < other._cmp_key()
+
+    def __le__(self, other):
+        if not isinstance(other, SemVer):
+            return NotImplemented
+        return self._cmp_key() <= other._cmp_key()
+
+    def __gt__(self, other):
+        return not self.__le__(other)
+
+    def __ge__(self, other):
+        return not self.__lt__(other)
+
+    def __repr__(self):
+        pre = f"-{'.'.join(self.pre)}" if self.pre else ""
+        return f"SemVer({self.major}.{self.minor}.{self.patch}{pre})"
+
+
+def parse_semver(s: str) -> Optional[SemVer]:
+    """Parse ``vX.Y.Z`` or ``vX.Y.Z-pre.release.ids`` into a :class:`SemVer`.
+    Returns ``None`` on unparseable input."""
     s = s.strip().lstrip("vV")
-    m = re.match(r"^(\d+)\.(\d+)\.(\d+)", s)
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:-([a-zA-Z0-9.]+))?", s)
     if not m:
         return None
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    pre = tuple(m.group(4).split(".")) if m.group(4) else ()
+    return SemVer(int(m.group(1)), int(m.group(2)), int(m.group(3)), pre)
+
+
+def _parse_version(s: str) -> Optional[tuple[int, int, int]]:
+    """Backward-compat helper: strip leading ``v`` and parse ``X.Y.Z``."""
+    sv = parse_semver(s)
+    if sv is None:
+        return None
+    return (sv.major, sv.minor, sv.patch)
 
 
 def get_current_version() -> Optional[str]:
@@ -83,47 +147,101 @@ def install_dir() -> Path:
     return Path.cwd().resolve()
 
 
+def _is_test_tag(tag: str) -> bool:
+    """True when ``tag`` looks like a test/pre-release tag (contains ``-test``)."""
+    return "-test" in tag.lower()
+
+
+def choose_release(releases: list[dict], channel: str,
+                   current: SemVer) -> Optional[dict]:
+    """Pick the best release from a list, respecting the channel.
+
+    *releases* is a list of release dicts as returned by the GitHub releases
+    page (each must carry ``tag_name``).
+
+    * ``channel="prod"`` — only releases whose tag has NO pre-release suffix.
+    * ``channel="test"`` — only releases whose tag contains ``-test``.
+
+    Returns the release dict with the highest version that is strictly newer
+    than *current*, or ``None``.
+    """
+    best: Optional[SemVer] = None
+    best_rel: Optional[dict] = None
+    for rel in releases:
+        tag = (rel.get("tag_name") or "").strip()
+        sv = parse_semver(tag)
+        if sv is None:
+            continue
+        if channel == "test":
+            if not _is_test_tag(tag):
+                continue
+        else:
+            if sv.pre:
+                continue
+        if sv <= current:
+            continue
+        if best is None or sv > best:
+            best = sv
+            best_rel = rel
+    return best_rel
+
+
+def verify_sha256(file_path: Path, expected_hash: str) -> bool:
+    """Return True when ``file_path``'s SHA-256 matches ``expected_hash``
+    (hex, case-insensitive)."""
+    h = hashlib.sha256()
+    with file_path.open("rb") as f:
+        for chunk in iter(lambda: f.read(64 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest().lower() == expected_hash.strip().lower()
+
+
+def _parse_sha256sums(text: str) -> dict[str, str]:
+    """Parse a ``SHA256SUMS.txt`` file. Returns ``{filename: hex_hash}``."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            out[parts[1].strip()] = parts[0].strip()
+    return out
+
+
 class UpdateChecker(QObject):
     """Single-shot worker: query GitHub, compare versions, download the
     asset if newer. Lives on its own QThread; reports outcomes via
     Qt signals that are queued back to the UI thread automatically."""
 
-    # Emitted when a newer release was found and download is starting.
-    download_started = Signal(str)            # tag
-
-    # Emitted once the file is fully written to disk.
-    download_finished = Signal(str, str)      # tag, absolute path
-
-    # Emitted when the asset for the latest tag is already on disk
-    # (left over from a prior run) — nothing to do, but useful in logs.
-    already_present = Signal(str, str)        # tag, absolute path
-
-    # Emitted when we're already on the latest release.
-    up_to_date = Signal(str)                  # current tag
-
-    # Emitted on any error (offline, GitHub 5xx, asset missing). The
-    # UI keeps quiet — this is for diagnostics in stdout only.
-    failed = Signal(str)                      # human-readable reason
-
-    # Emitted exactly once when the worker finishes (success or fail),
-    # so the parent can quit the QThread cleanly.
+    download_started = Signal(str)
+    download_finished = Signal(str, str)
+    already_present = Signal(str, str)
+    up_to_date = Signal(str)
+    failed = Signal(str)
     done = Signal()
 
     def __init__(self, current_version: str,
+                 channel: str = "prod",
                  parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._current = current_version
+        self._channel = channel
 
     def run(self) -> None:
-        """Entry point — wire to ``QThread.started``."""
         try:
             self._run()
         finally:
             self.done.emit()
 
     def _run(self) -> None:
+        current_sv = parse_semver(self._current)
+        if current_sv is None:
+            self.failed.emit(f"could not parse current version: {self._current!r}")
+            return
+
         try:
-            payload = self._fetch_latest()
+            releases = self._fetch_releases()
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             self.failed.emit(f"could not reach GitHub: {e}")
             return
@@ -131,20 +249,13 @@ class UpdateChecker(QObject):
             self.failed.emit(f"could not parse GitHub response: {e}")
             return
 
-        tag = (payload.get("tag_name") or "").strip()
-        latest = _parse_version(tag)
-        current = _parse_version(self._current)
-        if latest is None or current is None:
-            self.failed.emit(
-                f"could not parse versions (latest={tag!r}, "
-                f"current={self._current!r})"
-            )
-            return
-        if latest <= current:
-            self.up_to_date.emit(tag)
+        chosen = choose_release(releases, self._channel, current_sv)
+        if chosen is None:
+            self.up_to_date.emit(self._current)
             return
 
-        asset_url = self._pick_asset(payload, tag)
+        tag = (chosen.get("tag_name") or "").strip()
+        asset_url = self._pick_asset(chosen, tag)
         if asset_url is None:
             self.failed.emit(f"no .exe asset found in release {tag}")
             return
@@ -160,24 +271,22 @@ class UpdateChecker(QObject):
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             self.failed.emit(f"download failed: {e}")
             return
+
+        sha_ok = self._verify_sha(chosen, tag, target)
+        if not sha_ok:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+            self.failed.emit(f"SHA256 mismatch for {target.name} — file deleted")
+            return
+
         self.download_finished.emit(tag, str(target))
 
     @staticmethod
-    def _fetch_latest() -> dict:
-        payload = UpdateChecker._fetch_json(f"{GITHUB_RELEASES_URL}/latest")
-        tag = (payload.get("tag_name") or "").strip()
-        version = tag.lstrip("vV")
-        if version:
-            name = f"LiveTelemetryEvo-{version}.exe"
-            payload.setdefault("assets", [{
-                "name": name,
-                "browser_download_url":
-                    f"{GITHUB_RELEASES_URL}/download/{tag}/{name}",
-            }])
-        return payload
-
-    @staticmethod
-    def _fetch_json(url: str) -> dict:
+    def _fetch_releases() -> list[dict]:
+        """Fetch the first page of releases (enough for channel selection)."""
+        url = f"{GITHUB_RELEASES_URL}?per_page=30"
         req = urllib.request.Request(
             url,
             headers={
@@ -188,15 +297,28 @@ class UpdateChecker(QObject):
         ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S,
                                      context=ctx) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            data = json.loads(resp.read().decode("utf-8"))
+        if isinstance(data, dict):
+            # /releases/latest returns a single dict; wrap it
+            return [data]
+        return data if isinstance(data, list) else []
+
+    @staticmethod
+    def _fetch_text(url: str) -> str:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S,
+                                     context=ctx) as resp:
+            return resp.read().decode("utf-8")
 
     @staticmethod
     def _pick_asset(payload: dict, tag: str) -> Optional[str]:
-        """Find the ``LiveTelemetryEvo-<version>.exe`` asset. Prefer one
-        whose name contains the tag's bare version; otherwise return
-        the first ``.exe`` in the release's asset list."""
         version = tag.lstrip("vV")
         assets = payload.get("assets") or []
+        # If no assets array (non-api endpoint), synthesize one
+        if not assets and version:
+            name = f"LiveTelemetryEvo-{version}.exe"
+            return f"{GITHUB_RELEASES_URL}/download/{tag}/{name}"
         for a in assets:
             name = (a.get("name") or "")
             if name.lower().endswith(".exe") and version in name:
@@ -209,10 +331,6 @@ class UpdateChecker(QObject):
 
     @staticmethod
     def _download(url: str, target: Path) -> None:
-        """Stream the asset to ``<target>.partial`` then atomic-rename
-        to ``target`` so a crash mid-download never leaves an
-        incomplete file under the final name (which would defeat the
-        skip-if-exists check on the next launch)."""
         tmp = target.with_suffix(target.suffix + ".partial")
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         ctx = ssl.create_default_context()
@@ -225,6 +343,27 @@ class UpdateChecker(QObject):
                         break
                     f.write(chunk)
         tmp.replace(target)
+
+    @staticmethod
+    def _verify_sha(release: dict, tag: str, exe_path: Path) -> bool:
+        """Download SHA256SUMS.txt from the release and verify ``exe_path``.
+        Returns True if hash matches, or if the sums file is absent (older
+        releases without checksums are accepted)."""
+        sha_url = f"{GITHUB_RELEASES_URL}/download/{tag}/SHA256SUMS.txt"
+        try:
+            text = UpdateChecker._fetch_text(sha_url)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            log("[updater] SHA256SUMS.txt not found in release; skipping verification")
+            return True
+        sums = _parse_sha256sums(text)
+        expected = sums.get(exe_path.name)
+        if expected is None:
+            log(f"[updater] {exe_path.name} not listed in SHA256SUMS.txt; skipping")
+            return True
+        ok = verify_sha256(exe_path, expected)
+        if not ok:
+            log(f"[updater] SHA256 MISMATCH for {exe_path.name}")
+        return ok
 
 
 class UpdateController(QObject):
@@ -291,8 +430,11 @@ class UpdateController(QObject):
 
         self._set_state(self.CHECKING)
 
+        from .settings import load_release_channel  # avoid circular
+        channel = load_release_channel()
+
         thread = QThread(self)
-        checker = UpdateChecker(self._current)
+        checker = UpdateChecker(self._current, channel=channel)
         checker.moveToThread(thread)
         # pylint: disable=no-member  # Qt signals are runtime metaclass magic
         thread.started.connect(checker.run)

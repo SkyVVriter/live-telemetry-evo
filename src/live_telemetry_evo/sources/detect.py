@@ -139,6 +139,7 @@ def _running_processes() -> list[str]:
 # titles at once.
 _GAMES: tuple[tuple[str, frozenset[str]], ...] = (
     ("ac-evo", frozenset({"assettocorsaevo.exe"})),
+    ("iracing", frozenset({"iracingsim64dx11.exe"})),
     ("acrally", frozenset({"acr.exe", "acrally.exe"})),
     ("ac1", frozenset({"acs.exe", "acs_x86.exe"})),
     ("acc", frozenset({"ac2-win64-shipping.exe", "acc.exe"})),

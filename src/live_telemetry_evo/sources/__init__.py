@@ -4,7 +4,7 @@ from .base import TelemetrySource
 from .synthetic import SyntheticTelemetrySource
 
 
-def make_source(name: str, hz: int = 60, parent=None) -> TelemetrySource:
+def make_source(name: str, hz: int = 60, parent=None, **kwargs) -> TelemetrySource:
     """Factory that maps a CLI/source-name string to the matching reader.
 
     Imports the live-game readers lazily so the synthetic path keeps
@@ -25,6 +25,13 @@ def make_source(name: str, hz: int = 60, parent=None) -> TelemetrySource:
     if name == "acrally":
         from .acrally import AcRallyTelemetrySource  # pylint: disable=import-outside-toplevel
         return AcRallyTelemetrySource(hz=hz, parent=parent)
+    if name == "iracing":
+        from .iracing import IRacingTelemetrySource  # pylint: disable=import-outside-toplevel
+        return IRacingTelemetrySource(hz=hz, parent=parent)
+    if name == "iracing-replay":
+        from .iracing import IRacingReplaySource  # pylint: disable=import-outside-toplevel
+        csv_path = kwargs.get("csv_path", "")
+        return IRacingReplaySource(csv_path=csv_path, hz=hz, parent=parent)
     raise ValueError(f"unknown telemetry source: {name!r}")
 
 

@@ -269,13 +269,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--source",
-        choices=("auto", "synthetic", "ac-evo", "ac1", "acc", "acrally"),
+        choices=("auto", "synthetic", "ac-evo", "ac1", "acc", "acrally",
+                 "iracing", "iracing-replay"),
         default="auto",
         help=("telemetry source: 'auto' (default, detect the running game), "
               "'ac-evo' (Assetto Corsa Evo), 'ac1' (original Assetto Corsa), "
               "'acc' (Assetto Corsa Competizione), 'acrally' (Assetto Corsa "
-              "Rally), or 'synthetic' (mock data)"),
+              "Rally), 'iracing' (iRacing via pyirsdk), "
+              "'iracing-replay' (replay from Garage 61 CSV), "
+              "or 'synthetic' (mock data)"),
     )
+    parser.add_argument("--replay-csv", type=str, default="",
+                        help="path to Garage 61 CSV for iracing-replay source")
     parser.add_argument("--hz", type=int, default=0,
                         help=("polling rate in Hz; 0 = use the value persisted in "
                               "settings (default 60). Allowed live values: "
@@ -660,16 +665,10 @@ def run(argv: list[str] | None = None) -> int:
 
     countdown.finished.connect(_reveal_widgets)
 
-    def _start_source(name: str) -> None:
+    def _start_source(name: str, **kwargs) -> None:
         current_source_name[0] = name
-        # A game is now detected: unlock the tray Data category and let the
-        # logging hotkey through (see ``_toggle_logging`` / the tray guard).
         game_detected[0] = True
-        # Build the source on the UI thread but with no parent — Qt
-        # forbids moveToThread on a parented object. Wire the bus before
-        # the thread starts; ``set_bus`` is plain Python so the worker
-        # sees the attribute as soon as it begins ticking.
-        source = make_source(name, hz=polling_hz, parent=None)
+        source = make_source(name, hz=polling_hz, parent=None, **kwargs)
         source.set_bus(bus)
 
         thread = QThread()
@@ -732,6 +731,8 @@ def run(argv: list[str] | None = None) -> int:
         detection.detected.connect(_start_source)
         window._detection = detection
         detection.start()
+    elif args.source == "iracing-replay" and args.replay_csv:
+        _start_source(args.source, csv_path=args.replay_csv)
     else:
         _start_source(args.source)
 

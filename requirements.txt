@@ -3,3 +3,7 @@ PySide6>=6.7.0
 # native openvr_api.dll inside the package; import is guarded so the
 # overlay still runs on machines without it / without SteamVR.
 openvr>=1.23.7
+# iRacing telemetry (Windows-only, lazy import)
+pyirsdk>=1.5.0; sys_platform == "win32"
+# Edge TTS for voice engineer
+edge-tts>=6.1.0

@@ -71,6 +71,6 @@ jobs:
             dist/LiveTelemetryEvo-*.exe
             dist/SHA256SUMS.txt
           body_path: release_notes.md
-          # Auto-generated PR/commit list is appended after ``body_path``.
           generate_release_notes: true
           fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-test') }}

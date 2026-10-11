@@ -706,6 +706,74 @@ the live AC Evo reader (or any future source) does not touch any UI code.
 
 ---
 
+## iRacing Support
+
+### iRacing Integration (EN)
+
+The overlay supports iRacing via the `pyirsdk` shared-memory SDK (Windows only).
+Detection is automatic when `iRacingSim64DX11.exe` is running.
+
+**Features:**
+- Live telemetry: speed, RPM, gear, pedals, g-forces
+- Extended data: lap distance %, yaw rate, steering angle, incidents
+- Per-car tracking: positions, lap times, car numbers/names
+- Session info: track ID/name/config, driver list, incident limits
+- **Race engineer core** (pure Python, no Qt dependency):
+  - Corner map auto-detection from speed minima + steering
+  - Balance detector (understeer/oversteer/slide by phase)
+  - Incident tracker with configurable thresholds
+  - Faster-car-behind proximity alerts
+  - Per-lap summary builder
+- **Race Worker client**: background thread posting laps/events to the relay API, polling TTS messages
+- **Pluggable TTS**: Edge TTS (default), with stubs for Piper and ElevenLabs
+
+**Replay/mock mode** for testing on Linux:
+```bash
+python -m live_telemetry_evo --source iracing-replay --replay-csv tests/sample_garage61.csv
+```
+
+The replay mode reads a Garage 61 CSV (columns: Speed, LapDistPct, Brake, Throttle, RPM, SteeringWheelAngle, Gear, Clutch, ABSActive, LatAccel, LongAccel, VertAccel, Yaw, YawRate) and feeds frames at the configured Hz, looping the file.
+
+### Поддержка iRacing (RU)
+
+Оверлей поддерживает iRacing через SDK `pyirsdk` (только Windows).
+Автоматическое обнаружение при запуске `iRacingSim64DX11.exe`.
+
+**Возможности:**
+- Телеметрия в реальном времени: скорость, обороты, передача, педали, перегрузки
+- Расширенные данные: % дистанции круга, скорость вращения, угол руля, инциденты
+- Отслеживание машин: позиции, времена кругов, номера/имена
+- Информация о сессии: ID/название/конфигурация трассы, список пилотов, лимиты инцидентов
+- **Ядро гоночного инженера** (чистый Python):
+  - Автоопределение поворотов по минимумам скорости + руль
+  - Детектор баланса (недостаточная/избыточная поворачиваемость/занос по фазам)
+  - Трекер инцидентов с настраиваемыми порогами
+  - Обнаружение быстрых машин сзади
+  - Построитель сводки по кругу
+- **Клиент Race Worker**: фоновый поток для отправки кругов/событий на сервер-ретранслятор, получение TTS-сообщений
+- **Подключаемый TTS**: Edge TTS (по умолчанию), заглушки для Piper и ElevenLabs
+
+**Режим повтора/тестирования** на Linux:
+```bash
+python -m live_telemetry_evo --source iracing-replay --replay-csv tests/sample_garage61.csv
+```
+
+### Release Channels / Каналы обновлений
+
+The updater supports two release channels (set in `positions.json` → `release_channel`):
+- `"prod"` (default) — only stable releases (e.g. `v1.0.0`)
+- `"test"` — pre-releases with `-test` suffix (e.g. `v0.9.0-test.3`)
+
+Downloaded `.exe` files are verified against `SHA256SUMS.txt` from the release; mismatches are rejected.
+
+Обновлятор поддерживает два канала (настройка `release_channel` в `positions.json`):
+- `"prod"` (по умолчанию) — только стабильные релизы
+- `"test"` — пре-релизы с суффиксом `-test`
+
+Загруженные `.exe` проверяются по `SHA256SUMS.txt` из релиза; при несовпадении файл отклоняется.
+
+---
+
 ## Caveats
 
 - **AC Evo's struct layout is still partially undocumented.** The structs in

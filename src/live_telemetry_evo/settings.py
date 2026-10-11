@@ -191,8 +191,57 @@ def save_vr_distance(meters: float) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Release channel
+# ---------------------------------------------------------------------------
+
+RELEASE_CHANNELS = ("prod", "test")
+
+
+def load_release_channel(default: str = "prod") -> str:
+    val = _read().get("release_channel")
+    if isinstance(val, str) and val in RELEASE_CHANNELS:
+        return val
+    return default
+
+
+def save_release_channel(channel: str) -> None:
+    if channel not in RELEASE_CHANNELS:
+        channel = "prod"
+    data = _read()
+    data["release_channel"] = channel
+    _write(data)
+
+
+# ---------------------------------------------------------------------------
 # AI Cloud Engineer & Multi-Tenant Telemetry Ingestion Settings
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Race Worker (iRacing relay) Settings
+# ---------------------------------------------------------------------------
+
+def load_race_worker_settings() -> dict:
+    data = _read()
+    rw = data.get("race_worker", {})
+    if not isinstance(rw, dict):
+        rw = {}
+    return {
+        "url": str(rw.get("url", "")),
+        "app_token": str(rw.get("app_token", "")),
+        "enabled": bool(rw.get("enabled", False)),
+    }
+
+
+def save_race_worker_settings(url: str, app_token: str,
+                              enabled: bool = True) -> None:
+    data = _read()
+    data["race_worker"] = {
+        "url": url.rstrip("/"),
+        "app_token": app_token.strip(),
+        "enabled": bool(enabled),
+    }
+    _write(data)
+
 
 DEFAULT_CLOUD_SERVER = ""
 DEFAULT_CLOUD_TOKEN = ""

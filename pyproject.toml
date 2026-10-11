@@ -1,25 +1,33 @@
 [project]
 name = "live-telemetry-evo"
-version = "0.8.1"
-description = "Transparent always-on-top telemetry overlay for every Assetto Corsa title (AC1, ACC, AC Evo, AC Rally)"
+version = "0.9.0-test.1"
+description = "Transparent always-on-top telemetry overlay for Assetto Corsa titles and iRacing"
 requires-python = ">=3.10"
 dependencies = [
     "PySide6>=6.7.0",
     "pyqtgraph>=0.13.4",
     "numpy>=1.26.0",
     "openvr>=1.23.7",
+    "edge-tts>=6.1.0",
 ]
 
 [project.optional-dependencies]
+iracing = [
+    "pyirsdk>=1.5.0",
+]
 dev = [
     "pylint>=3.0.0",
     "pyinstaller>=6.0.0",
     "pillow>=10.0.0",
+    "pytest>=7.0.0",
 ]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -39,6 +39,8 @@ from .telemetry import EngineData, InputsData, TelemetryFrame, WHEEL_IDS, WheelD
 _SKIP_FIELDS: frozenset[str] = frozenset({
     "torque_curve_nm",
     "temp_curve_pts",
+    "cars",
+    "drivers",
 })
 
 # How often the writer thread flushes to disk. At 60 Hz this is roughly

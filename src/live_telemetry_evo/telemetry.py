@@ -238,6 +238,39 @@ class InputsData:
 
 
 @dataclass
+class CarPosition:
+    """Compact per-car structure for multi-car tracking (iRacing)."""
+    car_idx: int = -1
+    position: int = 0
+    lap_dist_pct: float = 0.0
+    est_time: float = 0.0
+    last_lap_time: float = 0.0
+    car_number: str = ""
+    driver_name: str = ""
+
+
+@dataclass
+class IRacingData:
+    """iRacing-specific telemetry fields that extend the base frame."""
+    lap_dist_pct: float = 0.0
+    yaw_rate: float = 0.0
+    steering_angle_rad: float = 0.0
+    incident_count: int = 0
+    on_pit_road: bool = False
+    session_flags: int = 0
+    player_position: int = 0
+    player_class_position: int = 0
+    cars: list[CarPosition] = field(default_factory=list)
+    # Session info parsed from YAML
+    track_id_iracing: int = 0
+    track_name: str = ""
+    track_config: str = ""
+    car_name: str = ""
+    incident_limit: int = 0
+    drivers: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class TelemetryFrame:
     """One full snapshot: engine state + per-wheel state for FL/FR/RL/RR
     plus driver-input / dynamics / car-state for the inputs widget."""
@@ -245,6 +278,7 @@ class TelemetryFrame:
     engine: EngineData = field(default_factory=EngineData)
     inputs: InputsData = field(default_factory=InputsData)
     wheels: dict[str, WheelData] = field(default_factory=lambda: {w: WheelData() for w in WHEEL_IDS})
+    iracing: IRacingData = field(default_factory=IRacingData)
     # Identity of the car the player is currently in ("" until a source
     # reads one) and a counter that increments on every change of it.
     car_id: str = ""
