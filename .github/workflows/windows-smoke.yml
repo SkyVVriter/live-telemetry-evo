@@ -1,0 +1,156 @@
+name: Windows Smoke Test
+
+on:
+  push:
+    branches:
+      - iracing-test
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  smoke:
+    name: Build & smoke-test on Windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests
+        run: python -m pytest tests/ -v --tb=short
+
+      - name: Build executable
+        run: python build.py
+
+      - name: Verify build artifact
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path dist -Filter 'LiveTelemetryEvo-*.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'no LiveTelemetryEvo-*.exe in dist/' }
+          Write-Host "Built: $($exe.Name) ($([math]::Round($exe.Length / 1MB, 1)) MB)"
+          echo "SMOKE_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
+          echo "SMOKE_EXE_NAME=$($exe.Name)" >> $env:GITHUB_ENV
+
+      - name: Prepare smoke-test directories
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path smoke-screenshots | Out-Null
+          New-Item -ItemType Directory -Force -Path smoke-logs | Out-Null
+
+      - name: Launch app in replay mode
+        shell: pwsh
+        run: |
+          $csvPath = Join-Path $env:GITHUB_WORKSPACE 'tests' 'fixtures' 'sample_replay.csv'
+          $logFile = Join-Path $env:GITHUB_WORKSPACE 'smoke-logs' 'app-stdout.log'
+
+          # Start the app with iracing-replay source and open both dialogs
+          $proc = Start-Process -FilePath $env:SMOKE_EXE `
+            -ArgumentList "--source", "iracing-replay", "--replay-csv", $csvPath, `
+                           "--novr", "--open-dialog", "race_worker|tts" `
+            -PassThru -RedirectStandardOutput $logFile -RedirectStandardError (Join-Path $env:GITHUB_WORKSPACE 'smoke-logs' 'app-stderr.log')
+          echo "SMOKE_PID=$($proc.Id)" >> $env:GITHUB_ENV
+
+          # Wait for windows to render
+          Start-Sleep -Seconds 12
+
+      - name: Capture screenshots
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName System.Drawing
+
+          function Take-Screenshot {
+            param([string]$OutPath)
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+            $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+            $gfx.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $bmp.Save($OutPath, [System.Drawing.Imaging.ImageFormat]::Png)
+            $gfx.Dispose()
+            $bmp.Dispose()
+            Write-Host "Screenshot saved: $OutPath"
+          }
+
+          Take-Screenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' 'desktop-overlay.png')
+
+          # Brief pause then take another for any dialog that opened
+          Start-Sleep -Seconds 3
+          Take-Screenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' 'dialogs-open.png')
+
+      - name: Optional race-worker post
+        if: env.RACE_WORKER_URL != ''
+        shell: pwsh
+        env:
+          RACE_WORKER_URL: ${{ secrets.RACE_WORKER_URL }}
+          RACE_WORKER_APP_TOKEN: ${{ secrets.RACE_WORKER_APP_TOKEN }}
+        run: |
+          $baseUrl = $env:RACE_WORKER_URL.TrimEnd('/').TrimEnd('/race')
+          $headers = @{
+            'Authorization' = "Bearer $env:RACE_WORKER_APP_TOKEN"
+            'Content-Type' = 'application/json'
+          }
+          try {
+            $health = Invoke-RestMethod -Uri "$baseUrl/race/health" -Headers $headers -Method Get -TimeoutSec 10
+            Write-Host "Race Worker health: $($health | ConvertTo-Json -Compress)"
+            $session = Invoke-RestMethod -Uri "$baseUrl/race/sessions" -Headers $headers -Method Post -Body '{"source":"smoke-test","sim":"iRacing"}' -TimeoutSec 10
+            Write-Host "Session created: $($session.id)"
+            $lap = @{ lap=1; lap_time=92.5; position=5; incidents_total=0; fuel_used=2.1 }
+            Invoke-RestMethod -Uri "$baseUrl/race/sessions/$($session.id)/laps" -Headers $headers -Method Post -Body ($lap | ConvertTo-Json) -TimeoutSec 10
+            Write-Host "Lap posted"
+            Invoke-RestMethod -Uri "$baseUrl/race/sessions/$($session.id)/end" -Headers $headers -Method Post -TimeoutSec 10
+            Write-Host "Session ended"
+          } catch {
+            Write-Host "Race-worker post failed (non-fatal): $_"
+          }
+
+      - name: Stop app & collect logs
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:SMOKE_PID) {
+            try {
+              Stop-Process -Id $env:SMOKE_PID -Force -ErrorAction SilentlyContinue
+              Write-Host "Stopped process $env:SMOKE_PID"
+            } catch {
+              Write-Host "Process already exited"
+            }
+          }
+          # Collect any app log files from the working directory
+          Get-ChildItem -Path $env:GITHUB_WORKSPACE -Filter '*.log' -File | ForEach-Object {
+            Copy-Item $_.FullName -Destination (Join-Path $env:GITHUB_WORKSPACE 'smoke-logs' $_.Name) -Force
+          }
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-screenshots
+          path: smoke-screenshots/
+          if-no-files-found: warn
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: smoke-logs/
+          if-no-files-found: warn
