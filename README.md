@@ -725,7 +725,7 @@ Detection is automatic when `iRacingSim64DX11.exe` is running.
   - Faster-car-behind proximity alerts
   - Per-lap summary builder
 - **Race Worker client**: background thread posting laps/events to the relay API, polling TTS messages
-- **Pluggable TTS**: Edge TTS (default), with stubs for Piper and ElevenLabs
+- **Pluggable TTS**: Edge TTS (default), ElevenLabs (per-voice profiles, phrase cache, char budget, EdgeTTS fallback), stubs for Piper
 
 **Replay/mock mode** for testing on Linux:
 ```bash
@@ -751,7 +751,7 @@ The replay mode reads a Garage 61 CSV (columns: Speed, LapDistPct, Brake, Thrott
   - Обнаружение быстрых машин сзади
   - Построитель сводки по кругу
 - **Клиент Race Worker**: фоновый поток для отправки кругов/событий на сервер-ретранслятор, получение TTS-сообщений
-- **Подключаемый TTS**: Edge TTS (по умолчанию), заглушки для Piper и ElevenLabs
+- **Подключаемый TTS**: Edge TTS (по умолчанию), ElevenLabs (профили голосов, кеш фраз, бюджет символов, фолбэк на EdgeTTS), заглушки для Piper
 
 **Режим повтора/тестирования** на Linux:
 ```bash
@@ -771,6 +771,38 @@ Downloaded `.exe` files are verified against `SHA256SUMS.txt` from the release; 
 - `"test"` — пре-релизы с суффиксом `-test`
 
 Загруженные `.exe` проверяются по `SHA256SUMS.txt` из релиза; при несовпадении файл отклоняется.
+
+### ElevenLabs TTS / Голосовой движок ElevenLabs
+
+The ElevenLabs engine supports per-voice profiles (name, voice_id, model, stability, similarity), a phrase cache on disk, a character-usage counter with monthly budget warning, and automatic fallback to EdgeTTS on network errors or quota exhaustion. API key from `positions.json → elevenlabs.api_key` or the `ELEVENLABS_API_KEY` env var (never logged).
+
+Models: `eleven_multilingual_v2` (highest quality), `eleven_flash_v2_5` / `eleven_turbo_v2_5` (lower latency).
+
+### Voice Sample Preparation / Подготовка голосовых сэмплов
+
+`tools/voice_samples.py` prepares audio samples for ElevenLabs instant voice cloning. It does **not** upload anything to ElevenLabs. Users must have rights and consent for all source audio per ElevenLabs' terms of service.
+
+Requirements: `yt-dlp`, `ffmpeg` (must be on PATH).
+
+```bash
+python tools/voice_samples.py manifest.yaml --output ./voice_output --format wav
+```
+
+Manifest format (YAML or JSON):
+
+```yaml
+profiles:
+  - name: "MyEngineer"
+    voice_id: "optional-existing-id"
+    noise_reduce: true
+    sources:
+      - url: "https://www.youtube.com/watch?v=..."
+        segments: [[10.0, 25.5], [42.0, 58.0]]
+      - file: "/path/to/local.wav"
+        segments: [[0.0, 30.0]]
+```
+
+The tool downloads audio (yt-dlp), cuts segments, normalizes loudness (LUFS -16), optional noise reduction (highpass/lowpass/afftdn), exports mono 44.1 kHz WAV/MP3 per profile. Reports total clean duration vs the ElevenLabs recommended 1-2+ minutes for instant cloning.
 
 ---
 

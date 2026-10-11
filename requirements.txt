@@ -7,3 +7,5 @@ openvr>=1.23.7
 pyirsdk>=1.5.0; sys_platform == "win32"
 # Edge TTS for voice engineer
 edge-tts>=6.1.0
+# PyYAML for voice_samples tool manifests (optional, JSON fallback)
+pyyaml>=6.0
