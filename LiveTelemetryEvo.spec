@@ -31,8 +31,15 @@ ICON_ICO = RES_DIR / "icon.ico"
 
 
 def _read_version() -> str:
-    """Mirror of ``build.py:_read_version`` — kept inline so the spec is
-    self-sufficient when run directly via ``pyinstaller LiveTelemetryEvo.spec``."""
+    """Mirror of ``build.py:_read_version``.
+
+    Prefers ``BUILD_VERSION`` env var (set by release.yml from the git
+    tag) so the release exe carries the tag's semver version string.
+    """
+    import os as _os
+    from_env = _os.environ.get("BUILD_VERSION", "").strip()
+    if from_env:
+        return from_env
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     m = re.search(r'^\s*version\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
     if not m:

@@ -33,9 +33,17 @@ BUILD_DIR = ROOT / "build"
 
 
 def _read_version() -> str:
-    """Pull ``project.version`` from pyproject.toml without depending on
-    ``tomllib`` (3.11+) -- a regex over the line is enough for our flat
-    metadata block and keeps the script working on Python 3.10."""
+    """Return the build version.
+
+    Precedence: ``BUILD_VERSION`` env var (set by release.yml from the
+    git tag) > ``project.version`` in pyproject.toml.  The env var lets
+    the release workflow stamp the exe with the tag's semver string
+    (e.g. ``0.9.0-test.2``) while pyproject.toml keeps a PEP 440 value
+    for ``pip install -e .``.
+    """
+    from_env = os.environ.get("BUILD_VERSION", "").strip()
+    if from_env:
+        return from_env
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     m = re.search(r'^\s*version\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
     if not m:

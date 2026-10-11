@@ -1,6 +1,6 @@
 [project]
 name = "live-telemetry-evo"
-version = "0.9.0.dev1"
+version = "0.9.0.dev2"
 description = "Transparent always-on-top telemetry overlay for Assetto Corsa titles and iRacing"
 requires-python = ">=3.10"
 dependencies = [

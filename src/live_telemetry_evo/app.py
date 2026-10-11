@@ -1121,18 +1121,23 @@ def run(argv: list[str] | None = None) -> int:
         _dialog_names = [d.strip() for d in args.open_dialog.split("|")]
         def _auto_open_dialogs():
             for dname in _dialog_names:
+                dlg = None
                 if dname == "race_worker":
                     from .race_worker_dialog import RaceWorkerDialog
-                    dlg = RaceWorkerDialog(window)
-                    dlg.show()
+                    dlg = RaceWorkerDialog()
                 elif dname == "tts":
                     from .tts.settings_dialog import TTSSettingsDialog
-                    dlg = TTSSettingsDialog(window)
-                    dlg.show()
+                    dlg = TTSSettingsDialog()
                 elif dname == "ptt":
                     from .ptt.settings_dialog import PTTSettingsDialog
-                    dlg = PTTSettingsDialog(window)
+                    dlg = PTTSettingsDialog()
+                if dlg is not None:
+                    dlg.setWindowFlags(
+                        dlg.windowFlags() | Qt.WindowStaysOnTopHint)
                     dlg.show()
+                    dlg.raise_()
+                    dlg.activateWindow()
+                    window._smoke_dlg = dlg
         QTimer.singleShot(2000, _auto_open_dialogs)
 
     # Ctrl+C in a console (dev runs / run.bat) should shut down as gracefully

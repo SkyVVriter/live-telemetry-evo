@@ -40,7 +40,14 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Build executable
-        run: python build.py
+        env:
+          BUILD_VERSION: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          # Strip leading 'v' from tag to get the version string
+          export BUILD_VERSION="${BUILD_VERSION#v}"
+          echo "BUILD_VERSION=$BUILD_VERSION"
+          python build.py
 
       - name: Verify artifact
         # Fail fast if build.py reported success but no .exe ended up in dist/.
