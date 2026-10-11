@@ -1,0 +1,36 @@
+[Unit]
+Description=race-worker – iRacing relay API
+After=network.target
+Documentation=https://github.com/yourorg/race-worker
+
+[Service]
+Type=simple
+User=raceapi
+Group=raceapi
+WorkingDirectory=/opt/race-worker
+EnvironmentFile=/etc/race-worker/env
+ExecStart=/opt/race-worker/venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 --port 8091 \
+    --workers 1 --log-level info
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/opt/race-worker/data
+
+[Install]
+WantedBy=multi-user.target

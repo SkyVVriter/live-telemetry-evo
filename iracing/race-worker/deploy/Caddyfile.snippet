@@ -1,0 +1,25 @@
+# Add this block BEFORE the existing catch-all reverse_proxy in your
+# site block for acevo-ai.duckdns.org.
+#
+# Example full Caddyfile structure:
+#
+#   acevo-ai.duckdns.org {
+#       handle /race/* {
+#           reverse_proxy 127.0.0.1:8091
+#       }
+#       # (also allow bare /race/health without trailing path)
+#       handle /race {
+#           reverse_proxy 127.0.0.1:8091
+#       }
+#
+#       # existing catch-all — keep this AFTER the /race handles
+#       reverse_proxy 127.0.0.1:8080
+#   }
+
+handle /race/* {
+    reverse_proxy 127.0.0.1:8091
+}
+
+handle /race {
+    reverse_proxy 127.0.0.1:8091
+}
