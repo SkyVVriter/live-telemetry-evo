@@ -52,6 +52,7 @@ class SpeechScheduler:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._speaking = False
+        self._muted = False
 
     def enqueue(self, text: str, priority: Priority = Priority.NORMAL,
                 ttl_seconds: float = 30.0) -> None:
@@ -88,8 +89,19 @@ class SpeechScheduler:
         with self._lock:
             return len(self._queue)
 
+    @property
+    def muted(self) -> bool:
+        return self._muted
+
+    @muted.setter
+    def muted(self, value: bool) -> None:
+        self._muted = value
+
     def _run(self) -> None:
         while not self._stop.is_set():
+            if self._muted:
+                self._stop.wait(0.1)
+                continue
             msg = self._pick_message()
             if msg is not None:
                 self._speaking = True

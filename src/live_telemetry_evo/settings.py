@@ -295,3 +295,40 @@ def save_cloud_settings(
     }
     _write(data)
 
+
+# ---------------------------------------------------------------------------
+# PTT (Push-to-Talk) Settings
+# ---------------------------------------------------------------------------
+
+def load_ptt_settings() -> dict:
+    data = _read()
+    ptt = data.get("ptt", {})
+    if not isinstance(ptt, dict):
+        ptt = {}
+    binding = ptt.get("binding")
+    if isinstance(binding, dict):
+        binding = dict(binding)
+    else:
+        binding = None
+    return {
+        "enabled": bool(ptt.get("enabled", False)),
+        "mode": str(ptt.get("mode", "hold")),
+        "max_duration_s": float(ptt.get("max_duration_s", 15.0)),
+        "device_index": ptt.get("device_index"),
+        "stt_engine": str(ptt.get("stt_engine", "whisper-api")),
+        "whisper_api_key": str(ptt.get("whisper_api_key", "")),
+        "whisper_model_size": str(ptt.get("whisper_model_size", "base")),
+        "binding": binding,
+    }
+
+
+def save_ptt_settings(**kwargs) -> None:
+    data = _read()
+    ptt = data.get("ptt", {})
+    if not isinstance(ptt, dict):
+        ptt = {}
+    for k, v in kwargs.items():
+        ptt[k] = v
+    data["ptt"] = ptt
+    _write(data)
+

@@ -31,6 +31,10 @@ from .telemetry import TelemetryFrame
 from .tray import make_tray
 from .tts import SpeechScheduler, get_engine, Priority as TTSPriority
 from .tts.settings_dialog import load_tts_settings
+from .ptt.ptt_controller import PTTController, PTTMode
+from .ptt.recorder import AudioRecorder
+from .ptt.stt import get_stt_engine
+from .ptt.intents import IntentHandler, DriverContext
 from .updater import UpdateController
 from .vr import detect as vr_detect
 from .vr.overlay_output import VROverlayOutput
@@ -721,6 +725,8 @@ def run(argv: list[str] | None = None) -> int:
         if _rw_client is not None:
             _rw_client.start_polling(_on_rw_message)
 
+        _init_ptt()
+
     def _on_rw_message(msg: dict) -> None:
         text = msg.get("text", "")
         if not text:
@@ -809,7 +815,107 @@ def run(argv: list[str] | None = None) -> int:
                         "count": alert.current_count,
                     })
 
+    # --- PTT (Push-to-Talk) pipeline ------------------------------------
+    _ptt_controller: PTTController | None = None
+
+    def _get_driver_context() -> DriverContext:
+        f = bus.latest()
+        if f is None:
+            return DriverContext()
+        ir = f.iracing
+        eng = f.engine
+        summary = _lap_builder.current_summary()
+        corner = None
+        if _lap_builder.track_profile:
+            corner = _lap_builder.track_profile.corner_at(ir.lap_dist_pct)
+        return DriverContext(
+            position=ir.player_position,
+            class_position=ir.player_class_position,
+            lap=eng.current_lap,
+            lap_dist_pct=ir.lap_dist_pct,
+            corner_name=corner.name if corner else "",
+            incidents=ir.incident_count,
+            incident_limit_dt=_incident_tracker.thresholds.dt_limit,
+            incident_limit_dq=_incident_tracker.thresholds.dq_limit,
+            fuel_remaining=eng.fuel_liters,
+            fuel_per_lap=summary.fuel_used if summary.fuel_used > 0 else 0.0,
+        )
+
+    def _on_driver_feedback(text: str, duration: float, ctx: DriverContext) -> None:
+        if _rw_client is not None:
+            _rw_client.post_event({
+                "type": "driver_feedback",
+                "message": text,
+                "payload": {
+                    "transcript": text,
+                    "audio_duration_s": round(duration, 1),
+                    "lap": ctx.lap,
+                    "lap_dist_pct": round(ctx.lap_dist_pct, 4),
+                    "corner": ctx.corner_name,
+                    "position": ctx.position,
+                },
+            })
+
+    def _on_ptt_audio(wav_bytes: bytes, duration: float) -> None:
+        import threading as _th
+        def _stt_and_dispatch():
+            from .settings import load_ptt_settings as _load_ptt
+            cfg = _load_ptt()
+            stt = get_stt_engine(cfg["stt_engine"])
+            if stt is None:
+                log("[ptt] no STT engine available")
+                return
+            if cfg["stt_engine"] == "whisper-api" and cfg.get("whisper_api_key"):
+                stt.configure(api_key=cfg["whisper_api_key"])
+            result = stt.transcribe(wav_bytes)
+            if not result.text:
+                log("[ptt] empty transcription")
+                return
+            log(f"[ptt] STT result: {result.text[:80]} (lang={result.language})")
+            _intent_handler.handle(result.text, audio_duration=duration)
+        _th.Thread(target=_stt_and_dispatch, name="ptt-stt", daemon=True).start()
+
+    def _on_mute_tts(muted: bool) -> None:
+        if _speech_scheduler is not None:
+            _speech_scheduler.muted = muted
+
+    def _speak_local(text: str) -> None:
+        if _speech_scheduler is not None:
+            _speech_scheduler.enqueue(text, TTSPriority.HIGH, ttl_seconds=15)
+
+    _intent_handler = IntentHandler(
+        on_speak=_speak_local,
+        on_driver_feedback=_on_driver_feedback,
+        get_context=_get_driver_context,
+    )
+
+    def _init_ptt() -> None:
+        from .settings import load_ptt_settings
+        cfg = load_ptt_settings()
+        if not cfg["enabled"]:
+            return
+        binding_data = cfg.get("binding")
+        if not binding_data:
+            return
+        from .ptt.input_binding import PTTBinding
+        binding = PTTBinding.from_dict(binding_data)
+        recorder = AudioRecorder(device_index=cfg.get("device_index"))
+        controller = PTTController(
+            recorder=recorder,
+            on_audio_captured=_on_ptt_audio,
+            on_mute_tts=_on_mute_tts,
+            mode=PTTMode(cfg.get("mode", "hold")),
+            max_duration_s=cfg.get("max_duration_s", 15.0),
+        )
+        controller.set_binding(binding)
+        controller.start()
+        nonlocal _ptt_controller
+        _ptt_controller = controller
+        log(f"[overlay] PTT started (mode={cfg['mode']}, binding={binding.display_name})")
+
     def _shutdown_race_engineer() -> None:
+        if _ptt_controller is not None:
+            _ptt_controller.stop()
         if _speech_scheduler is not None:
             _speech_scheduler.stop()
         if _rw_client is not None:
@@ -1022,6 +1128,10 @@ def run(argv: list[str] | None = None) -> int:
                 elif dname == "tts":
                     from .tts.settings_dialog import TTSSettingsDialog
                     dlg = TTSSettingsDialog(window)
+                    dlg.show()
+                elif dname == "ptt":
+                    from .ptt.settings_dialog import PTTSettingsDialog
+                    dlg = PTTSettingsDialog(window)
                     dlg.show()
         QTimer.singleShot(2000, _auto_open_dialogs)
 

@@ -325,6 +325,16 @@ def make_tray(
     tts_action.triggered.connect(_open_tts_dialog)
     menu.addAction(tts_action)
 
+    # ---- Радио (PTT) — PTTSettingsDialog --------------------------------
+    def _open_ptt_dialog():
+        from .ptt.settings_dialog import PTTSettingsDialog
+        dlg = PTTSettingsDialog(parent)
+        dlg.exec()
+
+    ptt_action = QAction("Радио (PTT)\u2026", menu)
+    ptt_action.triggered.connect(_open_ptt_dialog)
+    menu.addAction(ptt_action)
+
     # ---- Release channel selector (prod / test) -------------------------
     channel_menu = menu.addMenu("Release channel")
     channel_group = QActionGroup(channel_menu)
