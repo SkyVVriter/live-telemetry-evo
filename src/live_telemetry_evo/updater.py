@@ -127,7 +127,8 @@ def get_current_version() -> Optional[str]:
     ``pyproject.toml`` walking up from this file. ``None`` if neither
     branch produces a match — the update check is then skipped."""
     if getattr(sys, "frozen", False):
-        m = re.search(r"-(\d+\.\d+\.\d+)$", Path(sys.executable).stem)
+        m = re.search(r"-(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)$",
+                       Path(sys.executable).stem)
         return m.group(1) if m else None
     for parent in Path(__file__).resolve().parents:
         pyproject = parent / "pyproject.toml"

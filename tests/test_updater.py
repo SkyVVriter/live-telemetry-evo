@@ -1,5 +1,6 @@
 """Tests for updater: SemVer parsing, channel selection, SHA256 verification."""
 import hashlib
+import re
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from live_telemetry_evo.updater import (
     SemVer,
     _parse_sha256sums,
     choose_release,
+    get_current_version,
     parse_semver,
     verify_sha256,
 )
@@ -126,3 +128,19 @@ class TestSHA256:
 
     def test_parse_sha256sums_empty(self):
         assert _parse_sha256sums("") == {}
+
+
+class TestGetCurrentVersionFrozen:
+    """Verify the frozen-exe regex in get_current_version handles pre-release."""
+
+    _REGEX = re.compile(r"-(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)$")
+
+    @pytest.mark.parametrize("stem,expected", [
+        ("LiveTelemetryEvo-1.2.3", "1.2.3"),
+        ("LiveTelemetryEvo-0.9.0-test.1", "0.9.0-test.1"),
+        ("LiveTelemetryEvo-2.0.0-beta.4.rc1", "2.0.0-beta.4.rc1"),
+        ("LiveTelemetryEvo", None),
+    ])
+    def test_frozen_exe_regex(self, stem, expected):
+        m = self._REGEX.search(stem)
+        assert (m.group(1) if m else None) == expected
