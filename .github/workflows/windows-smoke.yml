@@ -66,7 +66,7 @@ jobs:
           # Start the app with iracing-replay source and open both dialogs
           $proc = Start-Process -FilePath $env:SMOKE_EXE `
             -ArgumentList "--source", "iracing-replay", "--replay-csv", $csvPath, `
-                           "--novr", "--open-dialog", "race_worker|tts" `
+                           "--novr", "--open-dialog", "race_worker|tts|ptt" `
             -PassThru -RedirectStandardOutput $logFile -RedirectStandardError (Join-Path $env:GITHUB_WORKSPACE 'smoke-logs' 'app-stderr.log')
           echo "SMOKE_PID=$($proc.Id)" >> $env:GITHUB_ENV
 
