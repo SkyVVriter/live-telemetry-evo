@@ -4,7 +4,7 @@ PySide6>=6.7.0
 # overlay still runs on machines without it / without SteamVR.
 openvr>=1.23.7
 # iRacing telemetry (Windows-only, lazy import)
-pyirsdk>=1.5.0; sys_platform == "win32"
+pyirsdk>=1.3.0; sys_platform == "win32"
 # Edge TTS for voice engineer
 edge-tts>=6.1.0
 # PyYAML for voice_samples tool manifests (optional, JSON fallback)
