@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QMenu, QSystemTrayIcon, QWidget
 
 from .logbook import log_action
 from .resources import app_icon_path
+from .settings import RELEASE_CHANNELS, load_release_channel, save_release_channel
 from .updater import UpdateController
 
 
@@ -304,6 +305,41 @@ def make_tray(
     cloud_settings_action.triggered.connect(_open_cloud_settings)
     menu.addAction(cloud_settings_action)
 
+    # ---- Race Engineer (iRacing) — RaceWorkerDialog --------------------
+    def _open_race_worker_dialog():
+        from .race_worker_dialog import RaceWorkerDialog
+        dlg = RaceWorkerDialog(parent)
+        dlg.exec()
+
+    rw_action = QAction("Race Engineer (iRacing)\u2026", menu)
+    rw_action.triggered.connect(_open_race_worker_dialog)
+    menu.addAction(rw_action)
+
+    # ---- Голос инженера — TTSSettingsDialog -----------------------------
+    def _open_tts_dialog():
+        from .tts.settings_dialog import TTSSettingsDialog
+        dlg = TTSSettingsDialog(parent)
+        dlg.exec()
+
+    tts_action = QAction("Голос инженера\u2026", menu)
+    tts_action.triggered.connect(_open_tts_dialog)
+    menu.addAction(tts_action)
+
+    # ---- Release channel selector (prod / test) -------------------------
+    channel_menu = menu.addMenu("Release channel")
+    channel_group = QActionGroup(channel_menu)
+    channel_group.setExclusive(True)
+    channel_actions: list[tuple[str, QAction]] = []
+    for ch in RELEASE_CHANNELS:
+        a = QAction(ch, channel_menu)
+        a.setCheckable(True)
+        channel_group.addAction(a)
+        channel_menu.addAction(a)
+        a.triggered.connect(lambda _checked, c=ch: save_release_channel(c))
+        channel_actions.append((ch, a))
+
+    menu.addSeparator()
+
     update_action: QAction | None = None
     if updater is not None:
         text, enabled = _UPDATE_LABELS[updater.state]
@@ -394,6 +430,9 @@ def make_tray(
                 logging_shortcut,
             )
         )
+        cur_channel = load_release_channel()
+        for ch, a in channel_actions:
+            a.setChecked(ch == cur_channel)
 
     # Re-read state every time the menu opens so checkmarks and the
     # start/stop logging label stay in lockstep with the floating buttons

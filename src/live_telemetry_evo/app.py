@@ -14,7 +14,14 @@ from .frame_bus import FrameBus
 from .layout import ScreenLayout, compute_layout, pick_resolution
 from .logbook import log, log_action
 from .logger import CsvLogger
+from .race_engineer.balance import BalanceDetector
+from .race_engineer.corner_map import TrackProfile
+from .race_engineer.incidents import IncidentTracker, IncidentSeverity
+from .race_engineer.lap_summary import LapSummaryBuilder
+from .race_engineer.proximity import FasterCarBehindDetector
+from .race_worker_client import RaceWorkerClient
 from .settings import (delete_entries, load_polling_hz, load_positions,
+                        load_race_worker_settings, load_release_channel,
                         load_size_index, load_visibility, load_vr_distance,
                         load_vr_placement, load_vr_spread, save_polling_hz,
                         save_position, save_size_index, save_visibility,
@@ -22,6 +29,8 @@ from .settings import (delete_entries, load_polling_hz, load_positions,
 from .sources import make_source
 from .telemetry import TelemetryFrame
 from .tray import make_tray
+from .tts import SpeechScheduler, get_engine, Priority as TTSPriority
+from .tts.settings_dialog import load_tts_settings
 from .updater import UpdateController
 from .vr import detect as vr_detect
 from .vr.overlay_output import VROverlayOutput
@@ -285,6 +294,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                         help=("polling rate in Hz; 0 = use the value persisted in "
                               "settings (default 60). Allowed live values: "
                               "30/60/100/120/144/250."))
+    parser.add_argument(
+        "--open-dialog",
+        type=str, default="",
+        help=("open a settings dialog on startup for smoke-test "
+              "screenshots, e.g. --open-dialog race_worker or "
+              "--open-dialog tts. Accepts a pipe-separated list."))
     vr_group = parser.add_mutually_exclusive_group()
     vr_group.add_argument(
         "--vr", action="store_true",
@@ -389,6 +404,7 @@ def run(argv: list[str] | None = None) -> int:
         if f is None:
             return
         _dispatch_frame(f, engine, inputs, wheels)
+        _process_iracing_frame(f)
 
     # pylint: disable-next=no-member  # QTimer.timeout is a PySide6 Signal
     repaint_timer.timeout.connect(_on_repaint)
@@ -665,11 +681,151 @@ def run(argv: list[str] | None = None) -> int:
 
     countdown.finished.connect(_reveal_widgets)
 
+    # --- iRacing Race Engineer pipeline ---------------------------------
+    _is_iracing_source = [False]
+    _balance_detector = BalanceDetector()
+    _incident_tracker = IncidentTracker()
+    _proximity_detector = FasterCarBehindDetector()
+    _lap_builder = LapSummaryBuilder(_balance_detector, _incident_tracker)
+    _rw_client: RaceWorkerClient | None = None
+    _speech_scheduler: SpeechScheduler | None = None
+    _prev_lap_number = [0]
+
+    def _init_race_engineer(source_name: str) -> None:
+        """Spin up race-worker + TTS when the source is iRacing."""
+        if source_name not in ("iracing", "iracing-replay"):
+            return
+        _is_iracing_source[0] = True
+
+        rw_cfg = load_race_worker_settings()
+        if rw_cfg["enabled"] and rw_cfg["url"]:
+            client = RaceWorkerClient(base_url=rw_cfg["url"],
+                                      token=rw_cfg["app_token"])
+            nonlocal _rw_client
+            _rw_client = client
+            client.create_session(source=source_name)
+            log("[overlay] race-worker client started")
+
+        tts_cfg = load_tts_settings()
+        engine = get_engine(tts_cfg["engine"])
+        if engine is not None:
+            engine.configure(voice=tts_cfg["voice"],
+                             rate=tts_cfg["rate"],
+                             volume=tts_cfg["volume"])
+            sched = SpeechScheduler(engine)
+            sched.start()
+            nonlocal _speech_scheduler
+            _speech_scheduler = sched
+            log(f"[overlay] TTS scheduler started (engine={tts_cfg['engine']})")
+
+        if _rw_client is not None:
+            _rw_client.start_polling(_on_rw_message)
+
+    def _on_rw_message(msg: dict) -> None:
+        text = msg.get("text", "")
+        if not text:
+            return
+        prio_str = msg.get("priority", "normal").upper()
+        prio = getattr(TTSPriority, prio_str, TTSPriority.NORMAL)
+        if _speech_scheduler is not None:
+            _speech_scheduler.enqueue(text, priority=prio)
+        log(f"[race-worker] message: {text[:80]}")
+
+    def _process_iracing_frame(frame: TelemetryFrame) -> None:
+        """Run the race-engineer analysis on every frame when iRacing active."""
+        if not _is_iracing_source[0]:
+            return
+        ir = frame.iracing
+        eng = frame.engine
+        inp = frame.inputs
+
+        cur_lap = eng.current_lap
+        if cur_lap > _prev_lap_number[0] and _prev_lap_number[0] > 0:
+            summary = _lap_builder.finish_lap(
+                lap_time=(eng.last_lap_time_ms / 1000.0
+                          if eng.last_lap_time_ms > 0 else 0.0))
+            if _rw_client is not None:
+                _rw_client.post_lap({
+                    "lap_number": summary.lap_number,
+                    "lap_time": round(summary.lap_time, 3),
+                    "position": summary.position,
+                    "incidents_total": summary.incidents_total,
+                    "incidents_this_lap": summary.incidents_this_lap,
+                    "fuel_used": round(summary.fuel_used, 3),
+                    "fuel_remaining": round(summary.fuel_remaining, 3),
+                    "top_speed": round(summary.top_speed, 1),
+                    "dominant_balance": summary.dominant_balance(),
+                    "balance_notes": summary.balance_notes_for_api(),
+                })
+            _lap_builder.new_lap(
+                cur_lap, fuel=eng.fuel_liters,
+                incidents=ir.incident_count,
+                position=ir.player_position,
+                class_position=ir.player_class_position)
+        elif _prev_lap_number[0] == 0:
+            _lap_builder.new_lap(
+                cur_lap, fuel=eng.fuel_liters,
+                incidents=ir.incident_count,
+                position=ir.player_position,
+                class_position=ir.player_class_position)
+        _prev_lap_number[0] = cur_lap
+
+        _lap_builder.add_sample(
+            speed_kmh=eng.speed_kmh,
+            steer_rad=ir.steering_angle_rad,
+            yaw_rate=ir.yaw_rate,
+            brake=inp.brake,
+            throttle=inp.throttle,
+            lap_dist_pct=ir.lap_dist_pct,
+            fuel=eng.fuel_liters,
+            incidents=ir.incident_count,
+            on_pit_road=ir.on_pit_road,
+        )
+
+        proximity_alerts = _proximity_detector.update(
+            ir.lap_dist_pct, ir.player_position, ir.cars)
+        for pa in proximity_alerts:
+            if _speech_scheduler is not None:
+                _speech_scheduler.enqueue(pa.message, TTSPriority.HIGH, ttl_seconds=10)
+            if _rw_client is not None:
+                _rw_client.post_event({
+                    "type": "proximity",
+                    "message": pa.message,
+                    "gap_pct": round(pa.gap_pct, 4),
+                })
+
+        current_summary = _lap_builder.current_summary()
+        for alert in current_summary.incident_alerts:
+            if alert.severity in (IncidentSeverity.WARNING, IncidentSeverity.CRITICAL):
+                if _speech_scheduler is not None:
+                    prio = (TTSPriority.URGENT if alert.severity == IncidentSeverity.CRITICAL
+                            else TTSPriority.HIGH)
+                    _speech_scheduler.enqueue(alert.message, prio, ttl_seconds=15)
+                if _rw_client is not None:
+                    _rw_client.post_event({
+                        "type": "incident_alert",
+                        "severity": alert.severity.value,
+                        "message": alert.message,
+                        "count": alert.current_count,
+                    })
+
+    def _shutdown_race_engineer() -> None:
+        if _speech_scheduler is not None:
+            _speech_scheduler.stop()
+        if _rw_client is not None:
+            _rw_client.stop_polling()
+            _rw_client.end_session()
+
+    # pylint: disable-next=no-member
+    app.aboutToQuit.connect(_shutdown_race_engineer)
+
     def _start_source(name: str, **kwargs) -> None:
         current_source_name[0] = name
         game_detected[0] = True
         source = make_source(name, hz=polling_hz, parent=None, **kwargs)
         source.set_bus(bus)
+
+        _init_race_engineer(name)
 
         thread = QThread()
         source.moveToThread(thread)
@@ -759,6 +915,7 @@ def run(argv: list[str] | None = None) -> int:
         f = bus.latest()
         if f is not None:
             _dispatch_frame(f, engine, inputs, wheels)
+            _process_iracing_frame(f)
         t1 = time.perf_counter()
         items = []
         for key, view in (("engine", engine), ("inputs", inputs), *wheels.items()):
@@ -852,6 +1009,21 @@ def run(argv: list[str] | None = None) -> int:
     # Keep references on the window so the QObjects survive past run()'s scope.
     window._vr = vr
     window._vr_submit_timer = vr_submit_timer
+
+    # --open-dialog: open settings dialogs on startup (for smoke tests).
+    if args.open_dialog:
+        _dialog_names = [d.strip() for d in args.open_dialog.split("|")]
+        def _auto_open_dialogs():
+            for dname in _dialog_names:
+                if dname == "race_worker":
+                    from .race_worker_dialog import RaceWorkerDialog
+                    dlg = RaceWorkerDialog(window)
+                    dlg.show()
+                elif dname == "tts":
+                    from .tts.settings_dialog import TTSSettingsDialog
+                    dlg = TTSSettingsDialog(window)
+                    dlg.show()
+        QTimer.singleShot(2000, _auto_open_dialogs)
 
     # Ctrl+C in a console (dev runs / run.bat) should shut down as gracefully
     # as the tray Quit and Ctrl+Shift+Q paths: route SIGINT through

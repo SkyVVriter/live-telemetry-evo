@@ -197,11 +197,25 @@ def save_vr_distance(meters: float) -> None:
 RELEASE_CHANNELS = ("prod", "test")
 
 
-def load_release_channel(default: str = "prod") -> str:
+def _default_release_channel() -> str:
+    """Return ``"test"`` when the running build's version contains a
+    pre-release suffix like ``-test``, ``.dev``, or ``rc``;
+    ``"prod"`` otherwise."""
+    try:
+        from .updater import get_current_version
+        ver = get_current_version()
+        if ver and any(marker in ver for marker in ("-test", ".dev", "rc")):
+            return "test"
+    except Exception:
+        pass
+    return "prod"
+
+
+def load_release_channel(default: str | None = None) -> str:
     val = _read().get("release_channel")
     if isinstance(val, str) and val in RELEASE_CHANNELS:
         return val
-    return default
+    return default if default is not None else _default_release_channel()
 
 
 def save_release_channel(channel: str) -> None:
