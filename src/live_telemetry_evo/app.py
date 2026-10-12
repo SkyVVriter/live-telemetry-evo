@@ -330,6 +330,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def _run_self_test() -> int:
     """Run backend diagnostics and return 0 if all critical backends work."""
+    import ctypes
     from .logbook import log as _log
 
     results = {}
