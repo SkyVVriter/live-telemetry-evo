@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.8] - 2026-10-12
+
+### Fixed
+- **Joystick/wheel still not detected (winmm limitation)**: winmm's `joyGetDevCapsW` only sees legacy joystick-mapper devices. Modern HID-based wheels (Moza R16 via Pit House) don't register in the legacy mapper. Added a DirectInput8 backend via raw ctypes COM as the primary detection path — it sees all HID game controllers visible in Windows "Game Controllers", operates in background mode (`DISCL_BACKGROUND | DISCL_NONEXCLUSIVE`), and supports 128 buttons per device.
+
+### Added
+- **DirectInput8 backend** (`dinput.py`): `IDirectInput8W::EnumDevices` + `CreateDevice` + `SetDataFormat(c_dfDIJoystick2)` + `GetDeviceState(DIJOYSTATE2)` via raw COM vtable calls. Hidden message-only HWND for cooperative level. VID:PID extracted from `guidProduct`.
+- Backend priority: DirectInput8 → winmm → pygame.
+- **"Диагностика устройств"** button in PTT dialog: runs all three backends and shows results (name, VID:PID, button count, errors) in a copyable text box. Also logged to session.log.
+- `--open-dialog ptt_diag` CLI flag auto-opens PTT dialog and runs diagnostics (used in smoke test).
+- Smoke test phase 5: PTT diagnostics screenshot (`05-ptt-diagnostics.png`).
+- Support for button IDs > 32 in binding format (DIJOYSTATE2 has 128 buttons).
+- Devices freshly enumerated on each dialog open / assign press (hotplug support).
+- 7 new tests (244 total): DInput dataclass, DIJOYSTATE2 128-button layout, high button IDs, JoystickInfo, diagnostics report, backend field, run_diagnostics string content.
+
 ## [0.9.0-test.7] - 2026-10-12
 
 ### Added

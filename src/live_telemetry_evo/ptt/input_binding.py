@@ -1,12 +1,17 @@
 """PTT input binding: keyboard keys and joystick/wheel buttons.
 
 Keyboard capture uses ``pynput`` (cross-platform, background-capable).
-Joystick/wheel capture uses the Windows Multimedia ``winmm.dll`` API
-(``joyGetNumDevs`` / ``joyGetDevCapsW`` / ``joyGetPosEx``) as the
-primary backend — it needs no SDL, no display surface, no focus, and
-detects DirectInput devices (Moza, Fanatec, Thrustmaster, Logitech)
-while the app is in the background. Falls back to ``pygame`` on
-non-Windows platforms.
+Joystick/wheel capture uses three backends in priority order:
+
+1. **DirectInput8** (``dinput.py``): raw ctypes COM, sees all HID game
+   controllers (Moza, Fanatec, Thrustmaster …), background-safe via
+   ``DISCL_BACKGROUND | DISCL_NONEXCLUSIVE``, supports 128 buttons.
+2. **winmm** (``joyGetPosEx``): legacy Windows Multimedia API, up to
+   16 devices × 32 buttons. Works for older/legacy-registered devices.
+3. **pygame** (SDL2): fallback for non-Windows platforms.
+
+Devices are freshly enumerated each time ``list_joysticks()`` is called
+(handles hotplug).
 """
 from __future__ import annotations
 
@@ -61,14 +66,12 @@ class PTTBinding:
 
 
 # ---------------------------------------------------------------------------
-# winmm.dll joystick backend (Windows only)
+# winmm.dll joystick backend (Windows only, legacy devices)
 # ---------------------------------------------------------------------------
-
 _MAXPNAMELEN = 32
 _MAX_JOYSTICK_BUTTONS = 32
 _JOYERR_NOERROR = 0
 _JOY_RETURNBUTTONS = 0x00000080
-_JOY_RETURNALL = 0x000000FF
 
 
 class _JOYCAPSW(ctypes.Structure):
@@ -76,23 +79,16 @@ class _JOYCAPSW(ctypes.Structure):
         ("wMid", ctypes.wintypes.WORD),
         ("wPid", ctypes.wintypes.WORD),
         ("szPname", ctypes.wintypes.WCHAR * _MAXPNAMELEN),
-        ("wXmin", ctypes.wintypes.UINT),
-        ("wXmax", ctypes.wintypes.UINT),
-        ("wYmin", ctypes.wintypes.UINT),
-        ("wYmax", ctypes.wintypes.UINT),
-        ("wZmin", ctypes.wintypes.UINT),
-        ("wZmax", ctypes.wintypes.UINT),
+        ("wXmin", ctypes.wintypes.UINT), ("wXmax", ctypes.wintypes.UINT),
+        ("wYmin", ctypes.wintypes.UINT), ("wYmax", ctypes.wintypes.UINT),
+        ("wZmin", ctypes.wintypes.UINT), ("wZmax", ctypes.wintypes.UINT),
         ("wNumButtons", ctypes.wintypes.UINT),
         ("wPeriodMin", ctypes.wintypes.UINT),
         ("wPeriodMax", ctypes.wintypes.UINT),
-        ("wRmin", ctypes.wintypes.UINT),
-        ("wRmax", ctypes.wintypes.UINT),
-        ("wUmin", ctypes.wintypes.UINT),
-        ("wUmax", ctypes.wintypes.UINT),
-        ("wVmin", ctypes.wintypes.UINT),
-        ("wVmax", ctypes.wintypes.UINT),
-        ("wCaps", ctypes.wintypes.UINT),
-        ("wMaxAxes", ctypes.wintypes.UINT),
+        ("wRmin", ctypes.wintypes.UINT), ("wRmax", ctypes.wintypes.UINT),
+        ("wUmin", ctypes.wintypes.UINT), ("wUmax", ctypes.wintypes.UINT),
+        ("wVmin", ctypes.wintypes.UINT), ("wVmax", ctypes.wintypes.UINT),
+        ("wCaps", ctypes.wintypes.UINT), ("wMaxAxes", ctypes.wintypes.UINT),
         ("wNumAxes", ctypes.wintypes.UINT),
         ("wMaxButtons", ctypes.wintypes.UINT),
         ("szRegKey", ctypes.wintypes.WCHAR * _MAXPNAMELEN),
@@ -104,12 +100,9 @@ class _JOYINFOEX(ctypes.Structure):
     _fields_ = [
         ("dwSize", ctypes.wintypes.DWORD),
         ("dwFlags", ctypes.wintypes.DWORD),
-        ("dwXpos", ctypes.wintypes.DWORD),
-        ("dwYpos", ctypes.wintypes.DWORD),
-        ("dwZpos", ctypes.wintypes.DWORD),
-        ("dwRpos", ctypes.wintypes.DWORD),
-        ("dwUpos", ctypes.wintypes.DWORD),
-        ("dwVpos", ctypes.wintypes.DWORD),
+        ("dwXpos", ctypes.wintypes.DWORD), ("dwYpos", ctypes.wintypes.DWORD),
+        ("dwZpos", ctypes.wintypes.DWORD), ("dwRpos", ctypes.wintypes.DWORD),
+        ("dwUpos", ctypes.wintypes.DWORD), ("dwVpos", ctypes.wintypes.DWORD),
         ("dwButtons", ctypes.wintypes.DWORD),
         ("dwButtonNumber", ctypes.wintypes.DWORD),
         ("dwPOV", ctypes.wintypes.DWORD),
@@ -120,80 +113,59 @@ class _JOYINFOEX(ctypes.Structure):
 
 @dataclass
 class WinmmJoystick:
-    """A joystick discovered via the winmm API."""
     index: int
     name: str
     num_buttons: int
 
 
-def _load_winmm():
-    """Load winmm.dll and set up function prototypes. Returns
-    ``(joyGetNumDevs, joyGetDevCapsW, joyGetPosEx)`` or ``None``."""
-    if sys.platform != "win32":
-        return None
-    try:
-        winmm = ctypes.WinDLL("winmm", use_last_error=True)
-        joyGetNumDevs = winmm.joyGetNumDevs
-        joyGetNumDevs.restype = ctypes.wintypes.UINT
-
-        joyGetDevCapsW = winmm.joyGetDevCapsW
-        joyGetDevCapsW.argtypes = [
-            ctypes.wintypes.UINT,
-            ctypes.POINTER(_JOYCAPSW),
-            ctypes.wintypes.UINT,
-        ]
-        joyGetDevCapsW.restype = ctypes.wintypes.UINT
-
-        joyGetPosEx = winmm.joyGetPosEx
-        joyGetPosEx.argtypes = [
-            ctypes.wintypes.UINT,
-            ctypes.POINTER(_JOYINFOEX),
-        ]
-        joyGetPosEx.restype = ctypes.wintypes.UINT
-
-        return joyGetNumDevs, joyGetDevCapsW, joyGetPosEx
-    except (OSError, AttributeError) as e:
-        log(f"[ptt/input] winmm.dll load failed: {e}")
-        return None
-
-
 _winmm_funcs = None
-
 
 def _get_winmm():
     global _winmm_funcs
     if _winmm_funcs is None:
-        _winmm_funcs = _load_winmm() or False
+        if sys.platform != "win32":
+            _winmm_funcs = False
+            return None
+        try:
+            winmm = ctypes.WinDLL("winmm", use_last_error=True)
+            jgnd = winmm.joyGetNumDevs
+            jgnd.restype = ctypes.wintypes.UINT
+            jgdc = winmm.joyGetDevCapsW
+            jgdc.argtypes = [ctypes.wintypes.UINT,
+                             ctypes.POINTER(_JOYCAPSW), ctypes.wintypes.UINT]
+            jgdc.restype = ctypes.wintypes.UINT
+            jgpe = winmm.joyGetPosEx
+            jgpe.argtypes = [ctypes.wintypes.UINT,
+                             ctypes.POINTER(_JOYINFOEX)]
+            jgpe.restype = ctypes.wintypes.UINT
+            _winmm_funcs = (jgnd, jgdc, jgpe)
+        except (OSError, AttributeError):
+            _winmm_funcs = False
     return _winmm_funcs if _winmm_funcs is not False else None
 
 
 def list_joysticks_winmm() -> list[WinmmJoystick]:
-    """Enumerate joysticks via winmm. Works in background, no SDL."""
     funcs = _get_winmm()
     if funcs is None:
         return []
-    joyGetNumDevs, joyGetDevCapsW, _joyGetPosEx = funcs
-    num = joyGetNumDevs()
-    result: list[WinmmJoystick] = []
-    for i in range(min(num, 16)):
+    joyGetNumDevs, joyGetDevCapsW, _ = funcs
+    result = []
+    for i in range(min(joyGetNumDevs(), 16)):
         caps = _JOYCAPSW()
         if joyGetDevCapsW(i, ctypes.byref(caps),
                           ctypes.sizeof(_JOYCAPSW)) == _JOYERR_NOERROR:
             name = caps.szPname.strip("\x00").strip()
             if name:
                 result.append(WinmmJoystick(
-                    index=i, name=name,
-                    num_buttons=min(caps.wNumButtons, _MAX_JOYSTICK_BUTTONS),
-                ))
+                    i, name, min(caps.wNumButtons, _MAX_JOYSTICK_BUTTONS)))
     return result
 
 
 def _read_buttons_winmm(joy_id: int) -> int:
-    """Read the button bitmask for joystick ``joy_id``. Returns 0 on error."""
     funcs = _get_winmm()
     if funcs is None:
         return 0
-    _joyGetNumDevs, _joyGetDevCapsW, joyGetPosEx = funcs
+    _, _, joyGetPosEx = funcs
     info = _JOYINFOEX()
     info.dwSize = ctypes.sizeof(_JOYINFOEX)
     info.dwFlags = _JOY_RETURNBUTTONS
@@ -203,38 +175,128 @@ def _read_buttons_winmm(joy_id: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Unified joystick listing (winmm primary, pygame fallback)
+# Unified joystick listing: DI8 -> winmm -> pygame
 # ---------------------------------------------------------------------------
 
-def list_joysticks() -> list[dict[str, str | int]]:
-    """Return available joysticks/wheels with name and button count."""
-    joys = list_joysticks_winmm()
-    if joys:
-        log(f"[ptt/input] winmm: {len(joys)} joystick(s) detected")
-        for j in joys:
-            log(f"[ptt/input]   [{j.index}] {j.name} ({j.num_buttons} buttons)")
-        return [{"index": j.index, "name": j.name, "buttons": j.num_buttons}
-                for j in joys]
+@dataclass
+class JoystickInfo:
+    """Unified joystick descriptor across backends."""
+    index: int
+    name: str
+    buttons: int
+    backend: str
+    vid_pid: str = ""
+
+
+def list_joysticks() -> list[dict]:
+    """Enumerate joysticks, trying DI8 first, then winmm, then pygame."""
+    result = _list_dinput()
+    if result:
+        log(f"[ptt/input] DirectInput8: {len(result)} device(s)")
+        for j in result:
+            log(f"[ptt/input]   [{j['index']}] {j['name']} "
+                f"({j['buttons']} btn, {j.get('vid_pid', '')})")
+        return result
+
+    result = _list_winmm()
+    if result:
+        log(f"[ptt/input] winmm: {len(result)} device(s)")
+        for j in result:
+            log(f"[ptt/input]   [{j['index']}] {j['name']} ({j['buttons']} btn)")
+        return result
+
+    result = _list_pygame()
+    if result:
+        log(f"[ptt/input] pygame: {len(result)} device(s)")
+        return result
+
+    log("[ptt/input] no joystick backend found devices")
+    return []
+
+
+def _list_dinput() -> list[dict]:
     try:
-        import pygame  # type: ignore[import-untyped]
+        from .dinput import list_devices_dinput
+        devs = list_devices_dinput()
+        return [{"index": i, "name": d.display_name,
+                 "buttons": d.num_buttons, "backend": "dinput8",
+                 "vid_pid": d.vid_pid, "_dinput_dev": d}
+                for i, d in enumerate(devs)]
+    except (ImportError, OSError) as e:
+        log(f"[ptt/input] DirectInput8 unavailable: {e}")
+        return []
+
+
+def _list_winmm() -> list[dict]:
+    joys = list_joysticks_winmm()
+    return [{"index": j.index, "name": j.name,
+             "buttons": j.num_buttons, "backend": "winmm"}
+            for j in joys]
+
+
+def _list_pygame() -> list[dict]:
+    try:
+        import pygame
         pygame.init()
         pygame.joystick.init()
         result = []
         for i in range(pygame.joystick.get_count()):
             j = pygame.joystick.Joystick(i)
             j.init()
-            result.append({
-                "index": i,
-                "name": j.get_name(),
-                "buttons": j.get_numbuttons(),
-            })
-        if result:
-            log(f"[ptt/input] pygame: {len(result)} joystick(s) detected")
+            result.append({"index": i, "name": j.get_name(),
+                           "buttons": j.get_numbuttons(),
+                           "backend": "pygame"})
         return result
     except (ImportError, Exception):
-        pass
-    log("[ptt/input] no joystick backend available")
-    return []
+        return []
+
+
+def run_diagnostics() -> str:
+    """Run all backends and return a diagnostic report string."""
+    lines = ["=== Joystick Diagnostics ===", ""]
+
+    lines.append("--- DirectInput8 ---")
+    try:
+        from .dinput import list_devices_dinput
+        devs = list_devices_dinput()
+        if devs:
+            for d in devs:
+                lines.append(
+                    f"  {d.display_name} (VID:PID={d.vid_pid}, "
+                    f"type=0x{d.dev_type:04X})")
+        else:
+            lines.append("  (no devices)")
+    except (ImportError, OSError) as e:
+        lines.append(f"  ERROR: {e}")
+
+    lines.append("")
+    lines.append("--- winmm (joyGetDevCapsW) ---")
+    joys = list_joysticks_winmm()
+    if joys:
+        for j in joys:
+            lines.append(f"  [{j.index}] {j.name} ({j.num_buttons} buttons)")
+    else:
+        lines.append("  (no devices)")
+
+    lines.append("")
+    lines.append("--- pygame (SDL2) ---")
+    try:
+        import pygame
+        pygame.init()
+        pygame.joystick.init()
+        n = pygame.joystick.get_count()
+        if n:
+            for i in range(n):
+                j = pygame.joystick.Joystick(i)
+                j.init()
+                lines.append(f"  [{i}] {j.get_name()} ({j.get_numbuttons()} btn)")
+        else:
+            lines.append("  (no devices)")
+    except (ImportError, Exception) as e:
+        lines.append(f"  ERROR: {e}")
+
+    lines.append("")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -242,15 +304,7 @@ def list_joysticks() -> list[dict[str, str | int]]:
 # ---------------------------------------------------------------------------
 
 class InputListener:
-    """Listens for keyboard and joystick input for PTT activation.
-
-    Two modes of operation:
-
-    1. **Assign mode**: captures the next key/button press and returns it
-       via a callback, then exits assign mode.
-    2. **Active mode**: fires ``on_press`` / ``on_release`` callbacks when
-       the bound control is pressed/released.
-    """
+    """Listens for keyboard and joystick input for PTT activation."""
 
     def __init__(self) -> None:
         self._binding: Optional[PTTBinding] = None
@@ -271,7 +325,6 @@ class InputListener:
 
     def start(self, on_press: Callable[[], None],
               on_release: Callable[[], None]) -> None:
-        """Start listening for the bound control."""
         self._on_press = on_press
         self._on_release = on_release
         self._stop.clear()
@@ -286,8 +339,6 @@ class InputListener:
             self._joy_thread = None
 
     def start_assign(self, callback: Callable[[PTTBinding], None]) -> None:
-        """Enter assign mode: next key/button press is captured and
-        passed to ``callback`` as a ``PTTBinding``."""
         self._assign_callback = callback
         self._stop.clear()
         self._start_keyboard_listener()
@@ -302,7 +353,7 @@ class InputListener:
     def _start_keyboard_listener(self) -> None:
         self._stop_keyboard_listener()
         try:
-            from pynput import keyboard  # type: ignore[import-untyped]
+            from pynput import keyboard
             self._keyboard_listener = keyboard.Listener(
                 on_press=self._on_key_press,
                 on_release=self._on_key_release,
@@ -355,7 +406,7 @@ class InputListener:
                 if self._on_release:
                     self._on_release()
 
-    # ---- joystick (winmm primary, pygame fallback) ----
+    # ---- joystick polling ----
 
     def _start_joystick_listener(self) -> None:
         if self._joy_thread is not None:
@@ -365,20 +416,65 @@ class InputListener:
         self._joy_thread.start()
 
     def _joystick_loop(self) -> None:
-        if _get_winmm() is not None:
-            self._winmm_loop()
-        else:
-            self._pygame_loop()
-
-    def _winmm_loop(self) -> None:
-        """Poll joystick buttons via winmm.dll (background-safe)."""
-        joys = list_joysticks_winmm()
+        joys = list_joysticks()
         if not joys:
-            log("[ptt/input] winmm: no joysticks for polling")
+            return
+
+        dinput_devs = [j.get("_dinput_dev") for j in joys
+                       if j.get("backend") == "dinput8"]
+        if dinput_devs:
+            self._dinput_poll_loop(joys, dinput_devs)
+        elif joys[0].get("backend") == "winmm":
+            self._winmm_poll_loop(joys)
+        else:
+            self._pygame_poll_loop()
+
+    def _dinput_poll_loop(self, joys, dinput_devs):
+        from .dinput import read_device_buttons
+        prev: dict[int, list[bool]] = {}
+        while not self._stop.is_set():
+            for idx, dev in enumerate(dinput_devs):
+                if dev is None:
+                    continue
+                buttons = read_device_buttons(dev)
+                if not buttons:
+                    continue
+                old = prev.get(idx, [False] * len(buttons))
+                for btn_id, (now, was) in enumerate(zip(buttons, old)):
+                    if now and not was:
+                        if self._assign_callback is not None:
+                            b = PTTBinding(type=BindingType.JOYSTICK,
+                                           joy_id=idx, button_id=btn_id)
+                            cb = self._assign_callback
+                            self._assign_callback = None
+                            self.stop()
+                            cb(b)
+                            return
+                        if (self._binding
+                                and self._binding.type == BindingType.JOYSTICK
+                                and self._binding.joy_id == idx
+                                and self._binding.button_id == btn_id):
+                            self._pressed = True
+                            if self._on_press:
+                                self._on_press()
+                    elif not now and was:
+                        if (self._binding
+                                and self._binding.type == BindingType.JOYSTICK
+                                and self._binding.joy_id == idx
+                                and self._binding.button_id == btn_id):
+                            self._pressed = False
+                            if self._on_release:
+                                self._on_release()
+                prev[idx] = buttons
+            self._stop.wait(0.01)
+
+    def _winmm_poll_loop(self, joys):
+        winmm_joys = list_joysticks_winmm()
+        if not winmm_joys:
             return
         prev_buttons: dict[int, int] = {}
         while not self._stop.is_set():
-            for joy in joys:
+            for joy in winmm_joys:
                 buttons = _read_buttons_winmm(joy.index)
                 prev = prev_buttons.get(joy.index, 0)
                 changed = buttons ^ prev
@@ -391,15 +487,13 @@ class InputListener:
                         was_pressed = bool(prev & mask)
                         if now_pressed and not was_pressed:
                             if self._assign_callback is not None:
-                                binding = PTTBinding(
-                                    type=BindingType.JOYSTICK,
-                                    joy_id=joy.index,
-                                    button_id=btn,
-                                )
+                                b = PTTBinding(type=BindingType.JOYSTICK,
+                                               joy_id=joy.index,
+                                               button_id=btn)
                                 cb = self._assign_callback
                                 self._assign_callback = None
                                 self.stop()
-                                cb(binding)
+                                cb(b)
                                 return
                             if (self._binding
                                     and self._binding.type == BindingType.JOYSTICK
@@ -419,61 +513,48 @@ class InputListener:
                 prev_buttons[joy.index] = buttons
             self._stop.wait(0.01)
 
-    def _pygame_loop(self) -> None:
-        """Fallback: poll via pygame (needs SDL, may have focus issues)."""
+    def _pygame_poll_loop(self):
         try:
-            import pygame  # type: ignore[import-untyped]
-        except ImportError:
-            log("[ptt/input] pygame not available for joystick input")
-            return
-        try:
+            import pygame
             pygame.init()
             pygame.joystick.init()
-        except Exception as e:
-            log(f"[ptt/input] pygame init failed: {e}")
+        except (ImportError, Exception):
             return
-
         prev_states: dict[tuple[int, int], bool] = {}
         while not self._stop.is_set():
             try:
                 pygame.event.pump()
-                for joy_idx in range(pygame.joystick.get_count()):
-                    joy = pygame.joystick.Joystick(joy_idx)
+                for ji in range(pygame.joystick.get_count()):
+                    joy = pygame.joystick.Joystick(ji)
                     joy.init()
-                    for btn_idx in range(joy.get_numbuttons()):
-                        pressed = joy.get_button(btn_idx)
-                        key = (joy_idx, btn_idx)
-                        was_pressed = prev_states.get(key, False)
-
-                        if pressed and not was_pressed:
+                    for bi in range(joy.get_numbuttons()):
+                        pressed = joy.get_button(bi)
+                        key = (ji, bi)
+                        was = prev_states.get(key, False)
+                        if pressed and not was:
                             if self._assign_callback is not None:
-                                binding = PTTBinding(
-                                    type=BindingType.JOYSTICK,
-                                    joy_id=joy_idx,
-                                    button_id=btn_idx,
-                                )
+                                b = PTTBinding(type=BindingType.JOYSTICK,
+                                               joy_id=ji, button_id=bi)
                                 cb = self._assign_callback
                                 self._assign_callback = None
                                 self.stop()
-                                cb(binding)
+                                cb(b)
                                 return
                             if (self._binding
                                     and self._binding.type == BindingType.JOYSTICK
-                                    and self._binding.joy_id == joy_idx
-                                    and self._binding.button_id == btn_idx):
+                                    and self._binding.joy_id == ji
+                                    and self._binding.button_id == bi):
                                 self._pressed = True
                                 if self._on_press:
                                     self._on_press()
-
-                        elif not pressed and was_pressed:
+                        elif not pressed and was:
                             if (self._binding
                                     and self._binding.type == BindingType.JOYSTICK
-                                    and self._binding.joy_id == joy_idx
-                                    and self._binding.button_id == btn_idx):
+                                    and self._binding.joy_id == ji
+                                    and self._binding.button_id == bi):
                                 self._pressed = False
                                 if self._on_release:
                                     self._on_release()
-
                         prev_states[key] = pressed
             except Exception:
                 pass

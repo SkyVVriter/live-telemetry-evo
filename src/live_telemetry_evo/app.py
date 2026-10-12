@@ -1229,9 +1229,11 @@ def run(argv: list[str] | None = None) -> int:
                 elif dname == "tts":
                     from .tts.settings_dialog import TTSSettingsDialog
                     dlg = TTSSettingsDialog()
-                elif dname == "ptt":
+                elif dname in ("ptt", "ptt_diag"):
                     from .ptt.settings_dialog import PTTSettingsDialog
                     dlg = PTTSettingsDialog()
+                    if dname == "ptt_diag":
+                        QTimer.singleShot(500, dlg._on_diagnostics)
                 if dlg is not None:
                     dlg.setWindowFlags(
                         dlg.windowFlags() | Qt.WindowStaysOnTopHint)

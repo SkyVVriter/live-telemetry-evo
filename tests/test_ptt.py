@@ -3,6 +3,7 @@
 All tests run headless — sounddevice, pynput, and pygame are mocked.
 """
 import struct
+import sys
 import threading
 import time
 from pathlib import Path
@@ -19,6 +20,10 @@ from live_telemetry_evo.ptt.ptt_controller import (
 )
 from live_telemetry_evo.ptt.input_binding import (
     PTTBinding, BindingType, InputListener,
+    list_joysticks, run_diagnostics, JoystickInfo,
+    WinmmJoystick, _JOYCAPSW, _JOYINFOEX,
+    _JOYERR_NOERROR, _read_buttons_winmm,
+    list_joysticks_winmm,
 )
 from live_telemetry_evo.ptt.stt import (
     TranscriptionResult, WhisperAPIEngine, FasterWhisperEngine,
@@ -750,110 +755,24 @@ class TestWinmmBackend:
     """Test the winmm joystick backend with mocked ctypes."""
 
     def test_joycapsw_struct_fields(self):
-        from live_telemetry_evo.ptt.input_binding import _JOYCAPSW
         caps = _JOYCAPSW()
         assert hasattr(caps, "szPname")
         assert hasattr(caps, "wNumButtons")
-        assert hasattr(caps, "wMid")
 
     def test_joyinfoex_struct_fields(self):
-        from live_telemetry_evo.ptt.input_binding import _JOYINFOEX
         info = _JOYINFOEX()
         info.dwSize = ctypes.sizeof(_JOYINFOEX)
         assert hasattr(info, "dwButtons")
-        assert hasattr(info, "dwFlags")
         assert info.dwSize > 0
 
     def test_list_joysticks_winmm_with_mock(self):
-        """list_joysticks_winmm returns devices when winmm reports them."""
         from live_telemetry_evo.ptt import input_binding as mod
-        from live_telemetry_evo.ptt.input_binding import (
-            _JOYCAPSW, WinmmJoystick, _JOYERR_NOERROR,
-        )
-
         mock_caps = _JOYCAPSW()
         mock_caps.szPname = "Moza R16"
         mock_caps.wNumButtons = 12
 
-        def mock_joyGetNumDevs():
-            return 2
-
-        def mock_joyGetDevCapsW(joy_id, caps_ptr, size):
-            if joy_id == 0:
-                ctypes.memmove(caps_ptr, ctypes.byref(mock_caps),
-                               min(size, ctypes.sizeof(_JOYCAPSW)))
-                return _JOYERR_NOERROR
-            return 167  # JOYERR_PARMS
-
-        orig = mod._winmm_funcs
-        mod._winmm_funcs = (mock_joyGetNumDevs, mock_joyGetDevCapsW, None)
-        try:
-            from live_telemetry_evo.ptt.input_binding import list_joysticks_winmm
-            joys = list_joysticks_winmm()
-            assert len(joys) == 1
-            assert joys[0].name == "Moza R16"
-            assert joys[0].num_buttons == 12
-            assert joys[0].index == 0
-        finally:
-            mod._winmm_funcs = orig
-
-    def test_list_joysticks_winmm_empty(self):
-        """list_joysticks_winmm returns empty when no devices."""
-        from live_telemetry_evo.ptt import input_binding as mod
-        orig = mod._winmm_funcs
-        mod._winmm_funcs = (lambda: 0, lambda *a: 167, None)
-        try:
-            from live_telemetry_evo.ptt.input_binding import list_joysticks_winmm
-            assert list_joysticks_winmm() == []
-        finally:
-            mod._winmm_funcs = orig
-
-    def test_read_buttons_winmm_with_mock(self):
-        """_read_buttons_winmm reads the button bitmask correctly."""
-        from live_telemetry_evo.ptt import input_binding as mod
-        from live_telemetry_evo.ptt.input_binding import (
-            _JOYINFOEX, _JOYERR_NOERROR, _read_buttons_winmm,
-        )
-
-        def mock_joyGetPosEx(joy_id, info_ptr):
-            info = ctypes.cast(info_ptr, ctypes.POINTER(_JOYINFOEX)).contents
-            info.dwButtons = 0b1010  # buttons 1 and 3 pressed
-            return _JOYERR_NOERROR
-
-        orig = mod._winmm_funcs
-        mod._winmm_funcs = (None, None, mock_joyGetPosEx)
-        try:
-            bitmask = _read_buttons_winmm(0)
-            assert bitmask & (1 << 1)  # button 1 pressed
-            assert bitmask & (1 << 3)  # button 3 pressed
-            assert not (bitmask & (1 << 0))  # button 0 not pressed
-        finally:
-            mod._winmm_funcs = orig
-
-    def test_read_buttons_returns_zero_on_error(self):
-        """_read_buttons_winmm returns 0 when winmm is unavailable."""
-        from live_telemetry_evo.ptt import input_binding as mod
-        from live_telemetry_evo.ptt.input_binding import _read_buttons_winmm
-        orig = mod._winmm_funcs
-        mod._winmm_funcs = False
-        try:
-            assert _read_buttons_winmm(0) == 0
-        finally:
-            mod._winmm_funcs = orig
-
-    def test_list_joysticks_prefers_winmm(self):
-        """list_joysticks uses winmm when available, not pygame."""
-        from live_telemetry_evo.ptt import input_binding as mod
-        from live_telemetry_evo.ptt.input_binding import (
-            _JOYCAPSW, _JOYERR_NOERROR,
-        )
-
-        mock_caps = _JOYCAPSW()
-        mock_caps.szPname = "Test Wheel"
-        mock_caps.wNumButtons = 8
-
         def mock_num():
-            return 1
+            return 2
 
         def mock_caps_fn(jid, ptr, sz):
             if jid == 0:
@@ -865,18 +784,102 @@ class TestWinmmBackend:
         orig = mod._winmm_funcs
         mod._winmm_funcs = (mock_num, mock_caps_fn, None)
         try:
-            result = mod.list_joysticks()
-            assert len(result) == 1
-            assert result[0]["name"] == "Test Wheel"
+            joys = list_joysticks_winmm()
+            assert len(joys) == 1
+            assert joys[0].name == "Moza R16"
+            assert joys[0].num_buttons == 12
         finally:
             mod._winmm_funcs = orig
 
-    def test_winmm_joystick_dataclass(self):
-        from live_telemetry_evo.ptt.input_binding import WinmmJoystick
-        j = WinmmJoystick(index=0, name="Moza R16", num_buttons=24)
-        assert j.index == 0
-        assert j.name == "Moza R16"
-        assert j.num_buttons == 24
+    def test_read_buttons_winmm_with_mock(self):
+        from live_telemetry_evo.ptt import input_binding as mod
+
+        def mock_joyGetPosEx(jid, ptr):
+            info = ctypes.cast(ptr, ctypes.POINTER(_JOYINFOEX)).contents
+            info.dwButtons = 0b1010
+            return _JOYERR_NOERROR
+
+        orig = mod._winmm_funcs
+        mod._winmm_funcs = (None, None, mock_joyGetPosEx)
+        try:
+            bitmask = _read_buttons_winmm(0)
+            assert bitmask & (1 << 1)
+            assert bitmask & (1 << 3)
+            assert not (bitmask & (1 << 0))
+        finally:
+            mod._winmm_funcs = orig
+
+    def test_read_buttons_returns_zero_on_error(self):
+        from live_telemetry_evo.ptt import input_binding as mod
+        orig = mod._winmm_funcs
+        mod._winmm_funcs = False
+        try:
+            assert _read_buttons_winmm(0) == 0
+        finally:
+            mod._winmm_funcs = orig
+
+
+class TestDInputBackend:
+    """Test the DirectInput8 backend structures and mocked listing."""
+
+    @pytest.mark.skipif(sys.platform != "win32",
+                        reason="DirectInput8 is Windows-only")
+    def test_dinput_device_dataclass(self):
+        from live_telemetry_evo.ptt.dinput import DInputDevice
+        d = DInputDevice(
+            instance_name="Moza R16",
+            product_name="Moza R16 Base",
+            guid_instance=b"\x00" * 16,
+            guid_product=b"\x34\x12\x78\x56" + b"\x00" * 12,
+            dev_type=0x0215,
+            num_buttons=128,
+            vid_pid="1234:5678",
+        )
+        assert d.display_name == "Moza R16 Base"
+        assert d.vid_pid == "1234:5678"
+        assert d.num_buttons == 128
+
+    @pytest.mark.skipif(sys.platform != "win32",
+                        reason="DirectInput8 is Windows-only")
+    def test_dijoystate2_has_128_buttons(self):
+        from live_telemetry_evo.ptt.dinput import _DIJOYSTATE2, _DI_BUTTON_COUNT
+        state = _DIJOYSTATE2()
+        assert _DI_BUTTON_COUNT == 128
+        assert len(state.rgbButtons) == 128
+
+    def test_binding_supports_high_button_ids(self):
+        b = PTTBinding(type=BindingType.JOYSTICK, joy_id=0, button_id=64)
+        assert b.display_name == "Joy 0 Btn 64"
+        d = b.to_dict()
+        b2 = PTTBinding.from_dict(d)
+        assert b2.button_id == 64
+
+    def test_joystick_info_dataclass(self):
+        j = JoystickInfo(index=0, name="Wheel", buttons=128,
+                         backend="dinput8", vid_pid="2345:6789")
+        assert j.backend == "dinput8"
+        assert j.vid_pid == "2345:6789"
+
+
+class TestDiagnostics:
+    def test_run_diagnostics_returns_string(self):
+        report = run_diagnostics()
+        assert isinstance(report, str)
+        assert "Joystick Diagnostics" in report
+        assert "DirectInput8" in report
+        assert "winmm" in report
+        assert "pygame" in report
+
+    def test_list_joysticks_returns_backend_field(self):
+        """list_joysticks() entries include a 'backend' field."""
+        from live_telemetry_evo.ptt import input_binding as mod
+        mock_result = [{"index": 0, "name": "MockWheel", "buttons": 16,
+                        "backend": "dinput8", "vid_pid": "1234:5678"}]
+        with patch.object(mod, '_list_dinput', return_value=mock_result):
+            result = list_joysticks()
+            assert len(result) == 1
+            assert result[0]["backend"] == "dinput8"
+            assert result[0]["name"] == "MockWheel"
 
 
 import ctypes

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -25,7 +26,7 @@ from PySide6.QtCore import Signal, QObject
 
 from ..logbook import log
 from ..settings import load_ptt_settings, save_ptt_settings
-from .input_binding import PTTBinding, list_joysticks
+from .input_binding import PTTBinding, list_joysticks, run_diagnostics
 from .recorder import AudioRecorder, list_input_devices, find_device_by_name
 from .stt import list_stt_engines
 
@@ -166,6 +167,22 @@ class PTTSettingsDialog(QDialog):
         self._refresh_joystick_info()
         bind_layout.addRow("Джойстики:", self._joy_label)
 
+        diag_layout = QHBoxLayout()
+        diag_btn = QPushButton("Диагностика устройств")
+        diag_btn.clicked.connect(self._on_diagnostics)
+        diag_layout.addWidget(diag_btn)
+        diag_layout.addStretch()
+        bind_layout.addRow("", diag_layout)
+
+        self._diag_text = QPlainTextEdit()
+        self._diag_text.setReadOnly(True)
+        self._diag_text.setMaximumHeight(120)
+        self._diag_text.setStyleSheet(
+            "background: #0d1117; color: #8b949e; font-family: monospace; "
+            "font-size: 11px; border: 1px solid #30363d; border-radius: 4px;")
+        self._diag_text.setVisible(False)
+        bind_layout.addRow("", self._diag_text)
+
         main.addWidget(bind_group)
 
         # --- Mode ---
@@ -287,6 +304,12 @@ class PTTSettingsDialog(QDialog):
     def _refresh_devices(self) -> None:
         cfg = load_ptt_settings()
         self._populate_device_combo(cfg)
+
+    def _on_diagnostics(self) -> None:
+        report = run_diagnostics()
+        self._diag_text.setPlainText(report)
+        self._diag_text.setVisible(True)
+        log(f"[ptt/dialog] device diagnostics:\n{report}")
 
     def _on_stt_engine_changed(self, engine_name: str) -> None:
         if engine_name == "elevenlabs-scribe":

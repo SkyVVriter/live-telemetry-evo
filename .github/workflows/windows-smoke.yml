@@ -182,14 +182,38 @@ jobs:
           taskkill /T /F /PID $proc.Id 2>$null
           Start-Sleep -Seconds 2
 
+      # ---- Phase 5: PTT diagnostics ----
+      - name: "Screenshot 5: PTT Diagnostics"
+        shell: pwsh
+        run: |
+          . $env:GITHUB_WORKSPACE\Take-SmokeScreenshot.ps1
+          $csv = Join-Path $env:GITHUB_WORKSPACE 'tests\fixtures\sample_replay.csv'
+          $dataDir = Join-Path $env:GITHUB_WORKSPACE 'smoke-logs\run-ptt-diag'
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          $env:LIVE_TELEMETRY_DATA_DIR = $dataDir
+          $proc = Start-Process -FilePath $env:SMOKE_EXE `
+            -ArgumentList "--source","iracing-replay","--replay-csv",$csv,"--novr","--open-dialog","ptt_diag" `
+            -PassThru
+          Start-Sleep -Seconds 10
+          Take-SmokeScreenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' '05-ptt-diagnostics.png')
+          # Dump diagnostics from session log
+          $logFile = Join-Path $dataDir 'logs' 'session.log'
+          if (Test-Path $logFile) {
+            Write-Host "--- PTT diagnostics log ---"
+            Get-Content $logFile | Where-Object { $_ -match 'dinput|winmm|pygame|ptt/input|ptt/dialog' } | ForEach-Object { Write-Host $_ }
+            Write-Host "--- end ---"
+          }
+          taskkill /T /F /PID $proc.Id 2>$null
+          Start-Sleep -Seconds 2
+
       # ---- Verify screenshots differ and logs exist ----
       - name: Verify screenshots differ and logs are non-empty
         shell: pwsh
         run: |
           $ssDir = Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots'
           $pngs = Get-ChildItem -Path $ssDir -Filter '*.png'
-          if ($pngs.Count -lt 5) {
-            throw "Expected at least 5 screenshots, found $($pngs.Count)"
+          if ($pngs.Count -lt 6) {
+            throw "Expected at least 6 screenshots, found $($pngs.Count)"
           }
 
           # Compute hashes and verify they are not ALL identical
