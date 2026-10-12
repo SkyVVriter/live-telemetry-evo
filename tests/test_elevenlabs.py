@@ -334,7 +334,8 @@ class TestSynthesizePayload:
 
         def mock_api(method, path, api_key, body=None, **kw):
             captured_body["data"] = json.loads(body.decode("utf-8"))
-            return b"\xff\xfb\x90\x00"  # fake MP3
+            captured_body["path"] = path
+            return b"\x00\x01" * 100  # fake PCM16
 
         with patch("live_telemetry_evo.tts.elevenlabs_engine._api_request",
                    side_effect=mock_api):
@@ -347,6 +348,7 @@ class TestSynthesizePayload:
         assert vs["style"] == 0.0
         assert vs["speed"] == 0.9
         assert payload["language_code"] == "en"
+        assert "output_format=pcm_24000" in captured_body["path"]
 
     def test_no_language_code_when_empty(self):
         engine = ElevenLabsEngine()
@@ -429,6 +431,36 @@ class TestProfileMigration:
         assert gp.style == 0.0
         assert gp.speed == 0.9
         assert gp.language == "en"
+
+    def test_gp_default_075_similarity_migrated(self, tmp_path):
+        """Saved GP with VoiceProfile default similarity 0.75 must become 0.9."""
+        from live_telemetry_evo import settings
+        orig = settings._positions_path
+        settings._positions_path = lambda: tmp_path / "positions.json"
+        try:
+            from live_telemetry_evo.settings import _write
+            _write({"elevenlabs": {
+                "profiles": [{
+                    "name": "GP",
+                    "voice_id": "L2sW7YcZbRyXB141p5PF",
+                    "model_id": "eleven_multilingual_v2",
+                    "stability": 0.8,
+                    "similarity_boost": 0.75,
+                    "style": 0.0,
+                    "speed": 1.0,
+                    "language": "",
+                }],
+            }})
+            engine = ElevenLabsEngine()
+            engine._load_settings()
+            gp = engine.get_profiles()[0]
+            assert gp.stability == 0.8
+            assert gp.similarity_boost == 0.9
+            assert gp.style == 0.0
+            assert gp.speed == 0.9
+            assert gp.language == "en"
+        finally:
+            settings._positions_path = orig
 
 
 class TestNoAPIKeyLogged:

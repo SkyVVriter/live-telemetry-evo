@@ -15,6 +15,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 - **pynput / pygame missing in the exe**: added to requirements and PyInstaller hiddenimports / collected DLLs. Self-test imports both.
 - **piper_engine import error**: optional stub; missing module no longer logs an error.
 - **Misleading `--overlay-hidden` log**: hide-on-reveal no longer pretends the CLI flag was passed.
+- **TTS preview / engineer playback**: PowerShell `Media.SoundPlayer` (WAV-only, flashes a console, swallowed errors) is gone. Playback is in-process (`winsound` / `pygame.mixer` / `sounddevice`). ElevenLabs requests `pcm_24000` and wraps it as WAV. Every synth/playback step is logged; the TTS dialog shows the error instead of hanging on «Синтез...».
+- **GP preset Similarity 0.75**: saved GP profiles with the dataclass default 0.75 (or zeros) migrate back to the official preset — stability 0.8, similarity 0.9, style 0, speed 0.9, language en.
 
 ### Added
 - `GET /race/sessions` (auth required) lists recent sessions.

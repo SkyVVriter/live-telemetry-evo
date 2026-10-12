@@ -6,7 +6,7 @@ usage counter with budget display.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -52,6 +52,11 @@ def save_tts_settings(engine: str, voice: str, rate: str, volume: str) -> None:
         "volume": volume,
     }
     _write(data)
+
+
+class _PreviewBridge(QObject):
+    """Queued signal so the preview worker can update the GUI thread."""
+    finished = Signal(bool, str)
 
 
 _DARK_STYLESHEET = """
@@ -234,9 +239,14 @@ class TTSSettingsDialog(QDialog):
         preview_layout.addWidget(preview_btn)
         self._preview_status = QLabel("")
         self._preview_status.setStyleSheet("color: #8b949e; font-size: 11px;")
+        self._preview_status.setWordWrap(True)
         preview_layout.addWidget(self._preview_status)
         preview_layout.addStretch()
         main.addLayout(preview_layout)
+
+        self._preview_bridge = _PreviewBridge(self)
+        self._preview_bridge.finished.connect(
+            self._on_preview_finished, Qt.ConnectionType.QueuedConnection)
 
         main.addSpacing(8)
 
@@ -342,17 +352,20 @@ class TTSSettingsDialog(QDialog):
         engine_name = self._engine_combo.currentText()
         engine = get_engine(engine_name)
         if engine is None:
-            self._preview_status.setText(f"Движок '{engine_name}' недоступен")
-            self._preview_status.setStyleSheet("color: #e74c3c; font-size: 11px;")
+            self._set_preview_status(
+                False, f"Движок '{engine_name}' недоступен")
             log(f"[tts/dialog] engine '{engine_name}' not available for preview")
             return
 
+        profile_name = ""
         if engine_name == "elevenlabs":
             self._save_current_profile_edits()
             from .elevenlabs_engine import ElevenLabsEngine
             if isinstance(engine, ElevenLabsEngine):
                 api_key = self._el_api_key.text().strip()
                 row = self._profile_list.currentRow()
+                if 0 <= row < len(self._el_profiles):
+                    profile_name = self._el_profiles[row].name
                 engine.configure(
                     api_key=api_key,
                     active_profile=max(0, row),
@@ -367,17 +380,36 @@ class TTSSettingsDialog(QDialog):
                 volume=self._vol_input.text().strip(),
             )
 
-        self._preview_status.setText("Синтез...")
-        self._preview_status.setStyleSheet("color: #8b949e; font-size: 11px;")
+        self._set_preview_status(None, "Синтез...")
+        log(f"[tts/dialog] preview start engine={engine_name} "
+            f"profile={profile_name!r}")
 
         import threading
+
         def _do_preview():
             try:
                 engine.speak("Тест голосового движка", Priority.NORMAL)
+                log("[tts/dialog] preview finished OK")
+                self._preview_bridge.finished.emit(True, "OK")
             except Exception as e:
                 log(f"[tts/dialog] preview failed: {e}")
+                self._preview_bridge.finished.emit(False, str(e))
 
-        threading.Thread(target=_do_preview, daemon=True).start()
+        threading.Thread(target=_do_preview, name="tts-preview",
+                         daemon=True).start()
+
+    def _on_preview_finished(self, ok: bool, message: str) -> None:
+        self._set_preview_status(ok, message)
+
+    def _set_preview_status(self, ok: bool | None, message: str) -> None:
+        self._preview_status.setText(message)
+        if ok is True:
+            color = "#3fb950"
+        elif ok is False:
+            color = "#e74c3c"
+        else:
+            color = "#8b949e"
+        self._preview_status.setStyleSheet(f"color: {color}; font-size: 11px;")
 
     def _on_save(self) -> None:
         engine_name = self._engine_combo.currentText()

@@ -7,8 +7,6 @@ separate thread.
 from __future__ import annotations
 
 import hashlib
-import io
-import os
 import tempfile
 import threading
 from pathlib import Path
@@ -16,6 +14,7 @@ from typing import Any, Optional
 
 from ..logbook import log
 from .base import Priority, VoiceEngine
+from .playback import play_audio_file
 from .registry import register_engine
 
 _CACHE_DIR: Optional[Path] = None
@@ -50,10 +49,12 @@ class EdgeTTSEngine(VoiceEngine):
 
         if not cache_path.exists():
             try:
+                log(f"[tts/edge] synthesizing voice={self.voice}")
                 self._synthesize(text, cache_path)
+                log(f"[tts/edge] synthesis OK ({cache_path.stat().st_size} bytes)")
             except Exception as e:
                 log(f"[tts/edge] synthesis failed: {e}")
-                return
+                raise
 
         self._play(cache_path)
 
@@ -81,43 +82,17 @@ class EdgeTTSEngine(VoiceEngine):
     def _play(self, path: Path) -> None:
         with self._playback_lock:
             try:
-                if os.name == "nt":
-                    import winsound  # type: ignore[import-error]
-                    # winsound can't play mp3; use pygame or playsound fallback
-                    self._play_cross_platform(path)
-                else:
-                    self._play_cross_platform(path)
+                log(f"[tts/edge] playback start {path.name}")
+                play_audio_file(path)
+                log("[tts/edge] playback OK")
             except Exception as e:
                 log(f"[tts/edge] playback failed: {e}")
+                raise
 
     @staticmethod
     def _play_cross_platform(path: Path) -> None:
-        """Play audio using the first available method."""
-        try:
-            import subprocess
-            import sys
-            if sys.platform == "win32":
-                # PowerShell can play mp3
-                subprocess.run(
-                    ["powershell", "-c",
-                     f'(New-Object Media.SoundPlayer "{path}").PlaySync()'],
-                    timeout=30, check=False, capture_output=True,
-                )
-            elif sys.platform == "darwin":
-                subprocess.run(["afplay", str(path)], timeout=30, check=False)
-            else:
-                # Linux: try mpv, then ffplay, then aplay
-                for player in ("mpv --no-video", "ffplay -nodisp -autoexit",
-                               "aplay"):
-                    parts = player.split() + [str(path)]
-                    try:
-                        subprocess.run(parts, timeout=30, check=True,
-                                       capture_output=True)
-                        return
-                    except (FileNotFoundError, subprocess.CalledProcessError):
-                        continue
-        except Exception:
-            pass
+        """Backward-compatible alias used by older call sites / tests."""
+        play_audio_file(path)
 
     def list_voices(self) -> list[dict[str, str]]:
         try:

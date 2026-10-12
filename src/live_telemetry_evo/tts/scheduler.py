@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from ..logbook import log
 from .base import Priority, VoiceEngine
 
 
@@ -107,8 +108,8 @@ class SpeechScheduler:
                 self._speaking = True
                 try:
                     self.engine.speak(msg.text, Priority(-msg.priority))
-                except Exception:
-                    pass
+                except Exception as e:
+                    log(f"[tts/scheduler] speak failed: {e}")
                 self._speaking = False
             else:
                 self._stop.wait(0.1)

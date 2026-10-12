@@ -25,7 +25,17 @@ from typing import Any, Optional
 
 from ..logbook import log
 from .base import Priority, VoiceEngine
+from .playback import PCM_RATE_HZ, play_audio_file, pcm16_to_wav
 from .registry import register_engine
+
+GP_VOICE_ID = "L2sW7YcZbRyXB141p5PF"
+GP_PRESET = {
+    "stability": 0.8,
+    "similarity_boost": 0.9,
+    "style": 0.0,
+    "speed": 0.9,
+    "language": "en",
+}
 
 _API_BASE = "https://api.elevenlabs.io/v1"
 _TIMEOUT_S = 15
@@ -70,10 +80,13 @@ class VoiceProfile:
 
 
 DEFAULT_PROFILES: list[VoiceProfile] = [
-    VoiceProfile("GP", "L2sW7YcZbRyXB141p5PF",
+    VoiceProfile("GP", GP_VOICE_ID,
                  "eleven_multilingual_v2",
-                 stability=0.8, similarity_boost=0.9,
-                 style=0.0, speed=0.9, language="en"),
+                 stability=GP_PRESET["stability"],
+                 similarity_boost=GP_PRESET["similarity_boost"],
+                 style=GP_PRESET["style"],
+                 speed=GP_PRESET["speed"],
+                 language=GP_PRESET["language"]),
     VoiceProfile("Rachel (EN)", "21m00Tcm4TlvDq8ikWAM",
                  "eleven_multilingual_v2", 0.5, 0.75),
     VoiceProfile("Race Engineer (RU)", "21m00Tcm4TlvDq8ikWAM",
@@ -228,12 +241,29 @@ class ElevenLabsEngine(VoiceEngine):
             pass
 
     def _migrate_profiles(self) -> None:
-        """Restore preset values for built-in profiles that were saved
-        with zeroed-out fields (bug in earlier versions)."""
-        defaults_by_vid = {p.voice_id: p for p in DEFAULT_PROFILES}
+        """Restore official GP preset values and fix zeroed-out builtins.
+
+        Earlier builds saved GP with the VoiceProfile default
+        ``similarity_boost=0.75`` (or all zeros). The official GP
+        preset is stability 0.8 / similarity 0.9 / style 0 / speed 0.9.
+        """
         changed = False
         for p in self._profiles:
-            default = defaults_by_vid.get(p.voice_id)
+            if p.name == "GP" or p.voice_id == GP_VOICE_ID:
+                if (p.stability != GP_PRESET["stability"]
+                        or p.similarity_boost != GP_PRESET["similarity_boost"]
+                        or p.style != GP_PRESET["style"]
+                        or p.speed != GP_PRESET["speed"]
+                        or p.language != GP_PRESET["language"]):
+                    p.stability = GP_PRESET["stability"]
+                    p.similarity_boost = GP_PRESET["similarity_boost"]
+                    p.style = GP_PRESET["style"]
+                    p.speed = GP_PRESET["speed"]
+                    p.language = GP_PRESET["language"]
+                    changed = True
+                continue
+            default = next((d for d in DEFAULT_PROFILES
+                            if d.voice_id == p.voice_id), None)
             if default is None:
                 continue
             if (p.stability == 0.0 and default.stability != 0.0
@@ -276,24 +306,28 @@ class ElevenLabsEngine(VoiceEngine):
 
         profile = self.active_profile
         cache_path = self._cache_path(text, profile)
+        log(f"[tts/elevenlabs] speak profile={profile.name!r} "
+            f"chars={len(text)} cache={'hit' if cache_path.exists() else 'miss'}")
 
         if cache_path.exists():
             self._play(cache_path)
             return
 
         try:
+            log("[tts/elevenlabs] synthesizing (pcm_24000)")
             audio = self._synthesize_api(text, profile)
+            log(f"[tts/elevenlabs] synthesis OK ({len(audio)} bytes)")
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             err_str = str(e)
             if "429" in err_str or "quota" in err_str.lower():
                 log("[tts/elevenlabs] quota exceeded — falling back to EdgeTTS")
                 self._fallback_active = True
             else:
-                log(f"[tts/elevenlabs] network error — falling back to EdgeTTS")
+                log(f"[tts/elevenlabs] network error ({e}) — falling back to EdgeTTS")
             self._speak_fallback(text, priority)
             return
         except Exception as e:
-            log(f"[tts/elevenlabs] synthesis error — falling back to EdgeTTS")
+            log(f"[tts/elevenlabs] synthesis error ({e}) — falling back to EdgeTTS")
             self._speak_fallback(text, priority)
             return
 
@@ -302,23 +336,24 @@ class ElevenLabsEngine(VoiceEngine):
         self._save_settings()
 
         try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_path.write_bytes(audio)
-        except OSError:
-            pass
-
-        tmp = _cache_dir() / f"_play_{os.getpid()}.mp3"
-        try:
-            tmp.write_bytes(audio)
-            self._play(tmp)
-        finally:
+            pcm16_to_wav(audio, cache_path, rate=PCM_RATE_HZ)
+        except OSError as e:
+            log(f"[tts/elevenlabs] failed to write wav cache: {e}")
+            tmp = _cache_dir() / f"_play_{os.getpid()}.wav"
+            pcm16_to_wav(audio, tmp, rate=PCM_RATE_HZ)
             try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
+                self._play(tmp)
+            finally:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return
+
+        self._play(cache_path)
 
     def _synthesize_api(self, text: str, profile: VoiceProfile) -> bytes:
-        """Call the ElevenLabs TTS API and return raw MP3 bytes."""
+        """Call the ElevenLabs TTS API and return raw PCM16 bytes."""
         voice_settings: dict[str, float] = {
             "stability": profile.stability,
             "similarity_boost": profile.similarity_boost,
@@ -335,9 +370,10 @@ class ElevenLabsEngine(VoiceEngine):
         body = json.dumps(payload).encode("utf-8")
         return _api_request(
             "POST",
-            f"/text-to-speech/{profile.voice_id}",
+            f"/text-to-speech/{profile.voice_id}?output_format=pcm_24000",
             self.api_key,
             body=body,
+            accept="application/octet-stream",
         )
 
     def _cache_path(self, text: str, profile: VoiceProfile) -> Path:
@@ -347,7 +383,7 @@ class ElevenLabsEngine(VoiceEngine):
             f"{profile.style}:{profile.speed}:{profile.language}:"
             f"{text}".encode()
         ).hexdigest()
-        return _cache_dir() / f"el_{key}.mp3"
+        return _cache_dir() / f"el_{key}.wav"
 
     def _check_budget_warning(self) -> None:
         usage = self._usage
@@ -371,8 +407,17 @@ class ElevenLabsEngine(VoiceEngine):
 
     def _play(self, path: Path) -> None:
         with self._playback_lock:
-            from .edge_engine import EdgeTTSEngine
-            EdgeTTSEngine._play_cross_platform(path)
+            try:
+                log(f"[tts/elevenlabs] playback start {path.name}")
+                play_audio_file(path)
+                log("[tts/elevenlabs] playback OK")
+            except Exception as e:
+                log(f"[tts/elevenlabs] playback failed: {e}")
+                raise
+
+    def get_profiles(self) -> list[VoiceProfile]:
+        self._migrate_profiles()
+        return list(self._profiles)
 
     def list_voices(self) -> list[dict[str, str]]:
         if self.api_key:
@@ -414,10 +459,8 @@ class ElevenLabsEngine(VoiceEngine):
                     VoiceProfile.from_dict(p) if isinstance(p, dict) else p
                     for p in raw
                 ]
+                self._migrate_profiles()
         self._save_settings()
-
-    def get_profiles(self) -> list[VoiceProfile]:
-        return list(self._profiles)
 
     def set_profiles(self, profiles: list[VoiceProfile]) -> None:
         self._profiles = list(profiles)
