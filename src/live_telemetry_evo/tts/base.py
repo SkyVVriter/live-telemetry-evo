@@ -48,3 +48,12 @@ class VoiceEngine(ABC):
 
     def stop(self) -> None:
         """Stop any current playback. Default no-op."""
+
+
+def _log_import_error(mod_name: str, error: Exception) -> None:
+    """Log a TTS engine import failure without crashing."""
+    try:
+        from ..logbook import log
+        log(f"[tts] engine module '{mod_name}' import failed: {error}")
+    except Exception:
+        pass

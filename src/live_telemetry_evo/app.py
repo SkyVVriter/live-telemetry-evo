@@ -1226,9 +1226,13 @@ def run(argv: list[str] | None = None) -> int:
                 if dname == "race_worker":
                     from .race_worker_dialog import RaceWorkerDialog
                     dlg = RaceWorkerDialog()
-                elif dname == "tts":
+                elif dname in ("tts", "tts_elevenlabs"):
                     from .tts.settings_dialog import TTSSettingsDialog
                     dlg = TTSSettingsDialog()
+                    if dname == "tts_elevenlabs":
+                        idx = dlg._engine_combo.findText("elevenlabs")
+                        if idx >= 0:
+                            dlg._engine_combo.setCurrentIndex(idx)
                 elif dname in ("ptt", "ptt_diag"):
                     from .ptt.settings_dialog import PTTSettingsDialog
                     dlg = PTTSettingsDialog()

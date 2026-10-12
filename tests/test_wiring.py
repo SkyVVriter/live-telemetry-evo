@@ -217,6 +217,27 @@ class TestAppImports:
 
 # -- Fixture CSV exists under tests/fixtures/ -----------------------------
 
+class TestTTSEngineRegistry:
+    def test_all_engines_registered(self):
+        from live_telemetry_evo.tts import list_engines
+        engines = list_engines()
+        assert "edge-tts" in engines
+        assert "elevenlabs" in engines
+
+    def test_elevenlabs_engine_instantiable(self):
+        from live_telemetry_evo.tts import get_engine
+        engine = get_engine("elevenlabs")
+        assert engine is not None
+        assert engine.name == "elevenlabs"
+
+    def test_gp_profile_in_defaults(self):
+        from live_telemetry_evo.tts import get_engine
+        engine = get_engine("elevenlabs")
+        profiles = engine.get_profiles()
+        names = [p.name for p in profiles]
+        assert "GP" in names
+
+
 class TestFixtures:
     def test_sample_replay_csv_exists(self):
         csv = Path(__file__).parent / "fixtures" / "sample_replay.csv"

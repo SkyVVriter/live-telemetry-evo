@@ -206,8 +206,25 @@ jobs:
           taskkill /T /F /PID $proc.Id 2>$null
           Start-Sleep -Seconds 2
 
-      # ---- Phase 6: Debug dialog ----
-      - name: "Screenshot 6: Debug dialog"
+      # ---- Phase 6: TTS dialog with ElevenLabs selected ----
+      - name: "Screenshot 6: TTS ElevenLabs"
+        shell: pwsh
+        run: |
+          . $env:GITHUB_WORKSPACE\Take-SmokeScreenshot.ps1
+          $csv = Join-Path $env:GITHUB_WORKSPACE 'tests\fixtures\sample_replay.csv'
+          $dataDir = Join-Path $env:GITHUB_WORKSPACE 'smoke-logs\run-tts-el'
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          $env:LIVE_TELEMETRY_DATA_DIR = $dataDir
+          $proc = Start-Process -FilePath $env:SMOKE_EXE `
+            -ArgumentList "--source","iracing-replay","--replay-csv",$csv,"--novr","--open-dialog","tts_elevenlabs" `
+            -PassThru
+          Start-Sleep -Seconds 10
+          Take-SmokeScreenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' '06-tts-elevenlabs.png')
+          taskkill /T /F /PID $proc.Id 2>$null
+          Start-Sleep -Seconds 2
+
+      # ---- Phase 7: Debug dialog ----
+      - name: "Screenshot 7: Debug dialog"
         shell: pwsh
         run: |
           . $env:GITHUB_WORKSPACE\Take-SmokeScreenshot.ps1
@@ -219,7 +236,7 @@ jobs:
             -ArgumentList "--source","iracing-replay","--replay-csv",$csv,"--novr","--open-dialog","debug" `
             -PassThru
           Start-Sleep -Seconds 10
-          Take-SmokeScreenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' '06-debug-dialog.png')
+          Take-SmokeScreenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' '07-debug-dialog.png')
           taskkill /T /F /PID $proc.Id 2>$null
           Start-Sleep -Seconds 2
 
@@ -229,8 +246,8 @@ jobs:
         run: |
           $ssDir = Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots'
           $pngs = Get-ChildItem -Path $ssDir -Filter '*.png'
-          if ($pngs.Count -lt 7) {
-            throw "Expected at least 7 screenshots, found $($pngs.Count)"
+          if ($pngs.Count -lt 8) {
+            throw "Expected at least 8 screenshots, found $($pngs.Count)"
           }
 
           # Compute hashes and verify they are not ALL identical

@@ -108,7 +108,11 @@ class TTSSettingsDialog(QDialog):
 
         self._engine_combo = QComboBox()
         engines = list_engines()
-        self._engine_combo.addItems(engines if engines else ["edge-tts"])
+        required = ["edge-tts", "elevenlabs"]
+        for name in required:
+            if name not in engines:
+                engines.append(name)
+        self._engine_combo.addItems(engines)
         idx = self._engine_combo.findText(cfg["engine"])
         if idx >= 0:
             self._engine_combo.setCurrentIndex(idx)
@@ -224,9 +228,12 @@ class TTSSettingsDialog(QDialog):
 
         # Preview + bottom buttons
         preview_layout = QHBoxLayout()
-        preview_btn = QPushButton("Превью")
+        preview_btn = QPushButton("Проверить")
         preview_btn.clicked.connect(self._on_preview)
         preview_layout.addWidget(preview_btn)
+        self._preview_status = QLabel("")
+        self._preview_status.setStyleSheet("color: #8b949e; font-size: 11px;")
+        preview_layout.addWidget(self._preview_status)
         preview_layout.addStretch()
         main.addLayout(preview_layout)
 
@@ -332,6 +339,9 @@ class TTSSettingsDialog(QDialog):
         engine_name = self._engine_combo.currentText()
         engine = get_engine(engine_name)
         if engine is None:
+            self._preview_status.setText(f"Движок '{engine_name}' недоступен")
+            self._preview_status.setStyleSheet("color: #e74c3c; font-size: 11px;")
+            log(f"[tts/dialog] engine '{engine_name}' not available for preview")
             return
 
         if engine_name == "elevenlabs":
@@ -354,11 +364,17 @@ class TTSSettingsDialog(QDialog):
                 volume=self._vol_input.text().strip(),
             )
 
+        self._preview_status.setText("Синтез...")
+        self._preview_status.setStyleSheet("color: #8b949e; font-size: 11px;")
+
         import threading
-        threading.Thread(
-            target=lambda: engine.speak("Тест голосового движка", Priority.NORMAL),
-            daemon=True,
-        ).start()
+        def _do_preview():
+            try:
+                engine.speak("Тест голосового движка", Priority.NORMAL)
+            except Exception as e:
+                log(f"[tts/dialog] preview failed: {e}")
+
+        threading.Thread(target=_do_preview, daemon=True).start()
 
     def _on_save(self) -> None:
         engine_name = self._engine_combo.currentText()
