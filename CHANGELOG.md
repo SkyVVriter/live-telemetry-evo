@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.4] - 2026-10-12
+
+### Fixed
+- **Overlay toggle now uses `window.hide()`** instead of `setWindowOpacity(0.0)` which silently failed on Windows Server (no DWM compositor). The overlay window is now definitively hidden.
+- `_reveal_widgets` actively hides the window when `overlay_visible` is false, instead of just skipping widget show calls.
+- `_start_source` starts the headless engineer timer (instead of the repaint timer) when overlay is hidden at startup, keeping the race-engineer pipeline alive without rendering.
+
+### Added
+- 9 new tests: widget `isVisible()` / `window.hide()` / `window.show()` assertions after toggle, `_reveal_widgets` behavior for both states, tray toggle callback contract, parameter introspection.
+- Automated pixel-diff check in smoke workflow: compares widget regions between overlay-visible and overlay-hidden screenshots and fails if they're nearly identical.
+
 ## [0.9.0-test.3] - 2026-10-12
 
 ### Added

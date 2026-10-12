@@ -415,21 +415,17 @@ def run(argv: list[str] | None = None) -> int:
                 for wid, view in wheels.items():
                     if vis.get(wid, True):
                         view.show()
+            window.show()
             if not vr.is_running():
                 repaint_timer.start()
             else:
                 vr_submit_timer.start()
-            window.setWindowOpacity(1.0 if not vr.is_running() else 0.0)
         else:
             repaint_timer.stop()
             vr_submit_timer.stop()
             if game_detected[0]:
                 engineer_timer.start()
-            engine.hide()
-            inputs.hide()
-            for view in wheels.values():
-                view.hide()
-            window.setWindowOpacity(0.0)
+            window.hide()
         log_action(f"overlay {'shown' if visible else 'hidden'}")
 
     def _toggle_overlay() -> None:
@@ -738,6 +734,7 @@ def run(argv: list[str] | None = None) -> int:
     def _reveal_widgets() -> None:
         widgets_ready[0] = True
         if not overlay_visible[0]:
+            window.hide()
             return
         if visibility.get("engine", True):
             engine.show()
@@ -1031,8 +1028,11 @@ def run(argv: list[str] | None = None) -> int:
         # Now that frames will start flowing, kick the UI-side paint
         # loop — unless VR is already live, where the VR tick owns frame
         # dispatch and the desktop overlay is invisible, or the overlay
-        # is hidden (no need to repaint invisible widgets).
-        if not vr.is_running() and overlay_visible[0]:
+        # is hidden (no need to repaint invisible widgets — the headless
+        # engineer timer keeps the race-engineer pipeline alive instead).
+        if not overlay_visible[0]:
+            engineer_timer.start()
+        elif not vr.is_running():
             repaint_timer.start()
 
         log(
@@ -1050,9 +1050,6 @@ def run(argv: list[str] | None = None) -> int:
     # input from the game underneath. Toggle from the tray (Windows menu).
     # log=False — this is startup initialisation, not a user action.
     window.toggle_click_through(log=False)
-
-    if not overlay_visible[0]:
-        window.setWindowOpacity(0.0)
 
     if args.source == "auto":
         detection = DetectionView(window)
