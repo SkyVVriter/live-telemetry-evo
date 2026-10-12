@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.6] - 2026-10-12
+
+### Fixed
+- **Joystick/wheel not detected**: pygame (SDL2) DLLs were not bundled by PyInstaller, and SDL requires a display surface + foreground focus for joystick events. Replaced with a native Windows `winmm.dll` backend (`joyGetNumDevs` / `joyGetDevCapsW` / `joyGetPosEx` via ctypes) that works without SDL, without focus, and detects DirectInput devices (Moza, Fanatec, Thrustmaster, Logitech) while iRacing is in the foreground. Falls back to pygame on non-Windows platforms.
+
+### Added
+- `winmm.dll` joystick backend: `list_joysticks_winmm()` enumerates devices, `_read_buttons_winmm()` polls up to 32 buttons per device at ~100 Hz from a background thread.
+- `WinmmJoystick` dataclass with index, name, and num_buttons.
+- Joystick enumeration results logged to session.log for debugging.
+- PTT dialog shows winmm-detected device names and button counts.
+- 8 new tests for the winmm backend (struct fields, mocked enumeration, button reading, fallback preference).
+
 ## [0.9.0-test.5] - 2026-10-12
 
 ### Fixed
