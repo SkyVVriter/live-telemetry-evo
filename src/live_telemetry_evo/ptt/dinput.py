@@ -50,6 +50,10 @@ _hidden_hwnd: int = 0
 _hwnd_class_atom = 0
 
 
+# ctypes.wintypes on Windows is missing HCURSOR/HICON/HBRUSH (Python 3.11).
+_HANDLE = ctypes.wintypes.HANDLE
+
+
 class _WNDCLASSEXW(ctypes.Structure):
     _fields_ = [
         ("cbSize", ctypes.wintypes.UINT),
@@ -58,12 +62,12 @@ class _WNDCLASSEXW(ctypes.Structure):
         ("cbClsExtra", ctypes.c_int),
         ("cbWndExtra", ctypes.c_int),
         ("hInstance", ctypes.wintypes.HINSTANCE),
-        ("hIcon", ctypes.wintypes.HICON),
-        ("hCursor", ctypes.wintypes.HCURSOR),
-        ("hbrBackground", ctypes.wintypes.HBRUSH),
+        ("hIcon", _HANDLE),
+        ("hCursor", _HANDLE),
+        ("hbrBackground", _HANDLE),
         ("lpszMenuName", ctypes.wintypes.LPCWSTR),
         ("lpszClassName", ctypes.wintypes.LPCWSTR),
-        ("hIconSm", ctypes.wintypes.HICON),
+        ("hIconSm", _HANDLE),
     ]
 
 
