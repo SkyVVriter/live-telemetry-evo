@@ -266,6 +266,10 @@ class IRacingData:
     track_name: str = ""
     track_config: str = ""
     car_name: str = ""
+    series: str = ""
+    session_type: str = ""
+    session_num: int = 0
+    driver: str = ""
     incident_limit: int = 0
     drivers: list[dict] = field(default_factory=list)
 

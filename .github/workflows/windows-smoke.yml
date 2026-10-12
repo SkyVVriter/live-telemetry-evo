@@ -39,6 +39,10 @@ jobs:
       - name: Run unit tests
         run: python -m pytest tests/ -v --tb=short
 
+      - name: Run race-worker API tests
+        working-directory: iracing/race-worker
+        run: python -m pytest tests/ -v --tb=short
+
       - name: Build executable
         run: python build.py
 
@@ -72,8 +76,17 @@ jobs:
             Write-Host "No session.log found — checking stdout"
           }
           Write-Host "Self-test exit code: $($proc.ExitCode)"
+          if (-not $exited) {
+            throw "Self-test timed out — hardware-independent checks must finish"
+          }
           if ($proc.ExitCode -ne 0) {
-            Write-Host "WARNING: Self-test returned non-zero (expected on CI without desktop/joystick)"
+            throw "Self-test failed with exit code $($proc.ExitCode). Hardware-independent checks are fatal."
+          }
+          if (Test-Path $logFile) {
+            $text = Get-Content $logFile -Raw
+            if ($text -notmatch 'Overall: PASS') {
+              throw "Self-test log does not contain 'Overall: PASS'"
+            }
           }
 
       - name: Prepare smoke-test directories

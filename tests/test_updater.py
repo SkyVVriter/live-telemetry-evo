@@ -7,12 +7,22 @@ import pytest
 
 from live_telemetry_evo.updater import (
     SemVer,
+    USER_AGENT,
+    _GITHUB_HEADERS,
     _parse_sha256sums,
     choose_release,
     get_current_version,
     parse_semver,
     verify_sha256,
 )
+
+
+class TestGitHubHeaders:
+    def test_accept_and_user_agent(self):
+        assert _GITHUB_HEADERS["Accept"] == "application/vnd.github+json"
+        assert _GITHUB_HEADERS["X-GitHub-Api-Version"] == "2022-11-28"
+        assert USER_AGENT.startswith("LiveTelemetryEvo/")
+        assert _GITHUB_HEADERS["User-Agent"] == USER_AGENT
 
 
 class TestSemVer:

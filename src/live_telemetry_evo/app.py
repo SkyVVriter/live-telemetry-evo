@@ -19,7 +19,11 @@ from .race_engineer.corner_map import TrackProfile
 from .race_engineer.incidents import IncidentTracker, IncidentSeverity
 from .race_engineer.lap_summary import LapSummaryBuilder
 from .race_engineer.proximity import FasterCarBehindDetector
-from .race_worker_client import RaceWorkerClient
+from .race_worker_client import (
+    RaceWorkerClient,
+    SessionSync,
+    session_payload_from_iracing,
+)
 from .settings import (delete_entries, load_overlay_visible, load_polling_hz,
                         load_positions,
                         load_race_worker_settings, load_release_channel,
@@ -341,17 +345,20 @@ def _run_self_test() -> int:
 
     _p("=== LiveTelemetryEvo Self-Test ===")
 
-    # TTS engines
+    # --- FATAL checks (hardware-independent; must pass on any runner) ---
+    # Only "device count > 0" is allowed to be non-fatal on CI.
+
+    # TTS engines registered
     try:
         from .tts import list_engines
         engines = list_engines()
         _p(f"TTS engines: {engines}")
-        results["tts"] = "edge-tts" in engines
+        results["tts_registered"] = "edge-tts" in engines and "elevenlabs" in engines
     except Exception as e:
         _p(f"TTS engines: FAIL ({e})")
-        results["tts"] = False
+        results["tts_registered"] = False
 
-    # pynput keyboard
+    # pynput keyboard importable
     try:
         from pynput import keyboard  # type: ignore
         _p(f"pynput: OK ({keyboard.__name__})")
@@ -360,7 +367,20 @@ def _run_self_test() -> int:
         _p(f"pynput: FAIL ({e})")
         results["pynput"] = False
 
-    # sounddevice
+    # pygame importable (bundled in the frozen exe)
+    try:
+        import pygame  # type: ignore
+        _p(f"pygame: OK ({getattr(pygame, '__version__', '?')})")
+        results["pygame"] = True
+    except ImportError as e:
+        if sys.platform == "win32":
+            _p(f"pygame: FAIL ({e})")
+            results["pygame"] = False
+        else:
+            _p(f"pygame: SKIP ({e})")
+            results["pygame"] = True
+
+    # sounddevice + PortAudio loadable
     try:
         import sounddevice as sd  # type: ignore
         _p(f"sounddevice: OK (PortAudio {sd.get_portaudio_version()[1]})")
@@ -369,35 +389,54 @@ def _run_self_test() -> int:
         _p(f"sounddevice: FAIL ({e})")
         results["sounddevice"] = False
 
-    # DirectInput8 (non-fatal on CI — no joystick hardware/desktop)
     if sys.platform == "win32":
+        # winmm struct sizes
+        from .ptt.input_binding import _JOYCAPSW, _JOYINFOEX
+        caps_sz = ctypes.sizeof(_JOYCAPSW)
+        info_sz = ctypes.sizeof(_JOYINFOEX)
+        _p(f"winmm: sizeof(JOYCAPSW)={caps_sz} (expect 728), "
+           f"sizeof(JOYINFOEX)={info_sz} (expect 52)")
+        results["winmm_structs"] = (caps_sz == 728 and info_sz == 52)
+
+        # winmm loads and joyGetNumDevs callable
+        try:
+            from .ptt.input_binding import _get_winmm
+            funcs = _get_winmm()
+            if funcs is None:
+                _p("winmm: FAIL (dll not loaded)")
+                results["winmm_load"] = False
+            else:
+                n = funcs[0]()
+                _p(f"winmm: loaded, joyGetNumDevs={n}")
+                results["winmm_load"] = True
+        except Exception as e:
+            _p(f"winmm: FAIL ({e})")
+            results["winmm_load"] = False
+
+        # DirectInput8Create succeeds + hidden HWND
         try:
             from .ptt.dinput import DirectInput8
             di = DirectInput8()
             ok = di.init(hwnd=0)
-            devs = di.enumerate() if ok else []
-            _p(f"DirectInput8: {'OK' if ok else 'SKIP (no desktop HWND)'} "
-               f"({len(devs)} devices)")
-            results["dinput"] = True
+            if ok:
+                devs = di.enumerate()
+                hwnd_ok = bool(di._hwnd)
+                _p(f"DirectInput8: OK hwnd={int(di._hwnd.value or 0)} "
+                   f"{len(devs)} device(s)")
+                results["dinput_init"] = hwnd_ok
+            else:
+                _p("DirectInput8: FAIL (init returned False)")
+                results["dinput_init"] = False
         except Exception as e:
-            _p(f"DirectInput8: SKIP ({e})")
-            results["dinput"] = True
+            _p(f"DirectInput8: FAIL ({e})")
+            results["dinput_init"] = False
 
-        try:
-            from .ptt.input_binding import list_joysticks_winmm, _JOYCAPSW
-            sz = ctypes.sizeof(_JOYCAPSW)
-            _p(f"winmm: sizeof(JOYCAPSW)={sz} (expected 728)")
-            results["winmm_struct"] = sz == 728
-            wm = list_joysticks_winmm()
-            _p(f"winmm: {len(wm)} devices")
-        except Exception as e:
-            _p(f"winmm: FAIL ({e})")
-            results["winmm_struct"] = False
     else:
-        results["dinput"] = True
-        results["winmm_struct"] = True
+        results["winmm_structs"] = True
+        results["winmm_load"] = True
+        results["dinput_init"] = True
 
-    # Updater (GitHub API)
+    # GitHub API reachable
     try:
         from .updater import _GITHUB_HEADERS, GITHUB_API_RELEASES_URL
         import urllib.request, ssl, json as _json
@@ -407,16 +446,84 @@ def _run_self_test() -> int:
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             data = _json.loads(resp.read().decode("utf-8"))
         n = len(data) if isinstance(data, list) else 1
-        _p(f"GitHub API: OK ({n} releases)")
-        results["updater"] = n > 0
+        ua = _GITHUB_HEADERS.get("User-Agent", "")
+        _p(f"GitHub API: OK ({n} releases, UA={ua})")
+        results["updater"] = n > 0 and "application/vnd.github+json" in (
+            _GITHUB_HEADERS.get("Accept") or "")
     except Exception as e:
         _p(f"GitHub API: FAIL ({e})")
         results["updater"] = False
 
+    # Token sanitization (always) + 401 from a local auth stub
+    try:
+        from .race_worker_client import RaceWorkerClient, _sanitize_token
+        assert _sanitize_token("tok.") == "tok"
+        assert _sanitize_token("  tok  ") == "tok"
+        _p("race-worker: token sanitization OK")
+        results["rw_sanitize"] = True
+    except Exception as e:
+        _p(f"race-worker sanitization: FAIL ({e})")
+        results["rw_sanitize"] = False
+
+    try:
+        results["rw_auth_401"] = _self_test_race_worker_401(_p)
+    except Exception as e:
+        _p(f"race-worker auth 401: FAIL ({e})")
+        results["rw_auth_401"] = False
+
+    # --- Report ---
     all_ok = all(results.values())
     _p(f"Results: {results}")
     _p(f"Overall: {'PASS' if all_ok else 'FAIL'}")
     return 0 if all_ok else 1
+
+
+def _self_test_race_worker_401(_p) -> bool:
+    """Spin a tiny local server that 401s a bad token; client must report it."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from .race_worker_client import RaceWorkerClient
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            auth = self.headers.get("Authorization", "")
+            if auth != "Bearer good-token":
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"detail":"Invalid token"}')
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"[]")
+
+        def log_message(self, fmt, *args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    started = threading.Event()
+
+    def _serve():
+        started.set()
+        server.serve_forever()
+
+    thread = threading.Thread(target=_serve, daemon=True)
+    thread.start()
+    started.wait(2)
+    try:
+        bad = RaceWorkerClient(base_url=f"http://127.0.0.1:{port}",
+                               token="bad-token.")
+        ok, msg = bad.test_connection()
+        if ok or "401" not in msg:
+            _p(f"race-worker auth 401: FAIL (ok={ok} msg={msg!r})")
+            return False
+        _p(f"race-worker auth 401: OK ({msg})")
+        return True
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -843,7 +950,7 @@ def run(argv: list[str] | None = None) -> int:
         widgets_ready[0] = True
         if not overlay_visible[0]:
             window.hide()
-            log("[overlay] overlay hidden on reveal: window.hide() called")
+            log("[overlay] overlay not visible; widgets remain hidden")
             return
         if visibility.get("engine", True):
             engine.show()
@@ -862,11 +969,16 @@ def run(argv: list[str] | None = None) -> int:
     _proximity_detector = FasterCarBehindDetector()
     _lap_builder = LapSummaryBuilder(_balance_detector, _incident_tracker)
     _rw_client: RaceWorkerClient | None = None
+    _session_sync: SessionSync | None = None
     _speech_scheduler: SpeechScheduler | None = None
     _prev_lap_number = [0]
 
     def _init_race_engineer(source_name: str) -> None:
-        """Spin up race-worker + TTS when the source is iRacing."""
+        """Spin up race-worker + TTS when the source is iRacing.
+
+        Session creation is deferred until iRacing publishes session YAML
+        (track/car/driver). Creating an empty session at startup 422s.
+        """
         if source_name not in ("iracing", "iracing-replay"):
             return
         _is_iracing_source[0] = True
@@ -875,10 +987,11 @@ def run(argv: list[str] | None = None) -> int:
         if rw_cfg["enabled"] and rw_cfg["url"]:
             client = RaceWorkerClient(base_url=rw_cfg["url"],
                                       token=rw_cfg["app_token"])
-            nonlocal _rw_client
+            nonlocal _rw_client, _session_sync
             _rw_client = client
-            client.create_session(source=source_name)
-            log("[overlay] race-worker client started")
+            _session_sync = SessionSync(client)
+            log("[overlay] race-worker client started "
+                "(session will be created after iRacing connects)")
 
         tts_cfg = load_tts_settings()
         engine = get_engine(tts_cfg["engine"])
@@ -914,6 +1027,9 @@ def run(argv: list[str] | None = None) -> int:
         ir = frame.iracing
         eng = frame.engine
         inp = frame.inputs
+
+        if _session_sync is not None:
+            _session_sync.sync(session_payload_from_iracing(ir))
 
         cur_lap = eng.current_lap
         if cur_lap > _prev_lap_number[0] and _prev_lap_number[0] > 0:

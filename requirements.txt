@@ -11,5 +11,7 @@ edge-tts>=6.1.0
 sounddevice>=0.4.6
 # Keyboard listener for PTT binding
 pynput>=1.7.0
+# Joystick fallback (SDL2); primary backends are DirectInput8 / winmm
+pygame>=2.5.0; sys_platform == "win32"
 # PyYAML for voice_samples tool manifests (optional, JSON fallback)
 pyyaml>=6.0

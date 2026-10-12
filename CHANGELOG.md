@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.11] - 2026-10-12
+
+### Fixed
+- **Race-worker 422 at startup**: `create_session` is no longer called with only `source=` before iRacing connects. The client waits for session YAML (`sim`, `track_id`, `track_name`, `track_config`, `car`, `series`, `session_type`, `driver`), recreates the session on a session change, retries with backoff, and logs the 422 response body.
+- **Check Connection false OK**: the dialog hits authenticated `GET /race/sessions` so a wrong token shows 401. Pasted tokens are stripped of whitespace and trailing punctuation.
+- **Updater HTTP 406**: GitHub requests send `Accept: application/vnd.github+json`, `User-Agent: LiveTelemetryEvo/<ver>`, and `X-GitHub-Api-Version: 2022-11-28`.
+- **DirectInput hidden HWND**: window class is registered with correct x64 ctypes prototypes; `GetLastError` is logged; falls back to `GetDesktopWindow()`.
+- **winmm JOYCAPSW size**: struct is 728 bytes (`szOEMVxD` = 260 WCHARs); `JOYINFOEX` is 52. Self-test fails the build if sizes are wrong.
+- **pynput / pygame missing in the exe**: added to requirements and PyInstaller hiddenimports / collected DLLs. Self-test imports both.
+- **piper_engine import error**: optional stub; missing module no longer logs an error.
+- **Misleading `--overlay-hidden` log**: hide-on-reveal no longer pretends the CLI flag was passed.
+
+### Added
+- `GET /race/sessions` (auth required) lists recent sessions.
+- CI e2e: `RaceWorkerClient` against a local race-worker (create session, post lap, event, `driver_feedback`).
+- `--self-test` hardware-independent checks are fatal on the Windows smoke runner (device count > 0 remains non-fatal).
+
 ## [0.9.0-test.8] - 2026-10-12
 
 ### Fixed

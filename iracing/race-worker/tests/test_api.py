@@ -71,6 +71,37 @@ class TestSessions:
         assert r.status_code == 200
         assert len(r.json()) >= 1
 
+    def test_list_sessions_requires_auth(self, client):
+        r = client.get("/race/sessions")
+        assert r.status_code in (401, 403)
+
+    def test_list_sessions_rejects_bad_token(self, client):
+        r = client.get("/race/sessions",
+                       headers={"Authorization": "Bearer wrong"})
+        assert r.status_code == 401
+
+    def test_list_sessions_recent(self, client, app_headers, assistant_headers):
+        first = _create_session(client, app_headers).json()["id"]
+        time.sleep(0.02)
+        second = _create_session(client, app_headers).json()["id"]
+        r = client.get("/race/sessions", headers=app_headers)
+        assert r.status_code == 200
+        ids = [s["id"] for s in r.json()]
+        assert second in ids
+        assert first in ids
+        assert ids.index(second) < ids.index(first)
+
+        r2 = client.get("/race/sessions", headers=assistant_headers)
+        assert r2.status_code == 200
+        assert len(r2.json()) >= 2
+
+    def test_list_sessions_respects_limit(self, client, app_headers):
+        _create_session(client, app_headers)
+        _create_session(client, app_headers)
+        r = client.get("/race/sessions?limit=1", headers=app_headers)
+        assert r.status_code == 200
+        assert len(r.json()) == 1
+
     def test_session_not_found(self, client, app_headers):
         r = client.get("/race/sessions/nonexistent", headers=app_headers)
         assert r.status_code == 404

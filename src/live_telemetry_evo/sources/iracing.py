@@ -40,6 +40,11 @@ def _parse_session_yaml(ir) -> dict:
         info["track_id"] = int(weekend.get("TrackID", 0))
         info["track_name"] = weekend.get("TrackDisplayName", "")
         info["track_config"] = weekend.get("TrackConfigName", "")
+        info["series"] = (
+            weekend.get("SeriesName")
+            or weekend.get("SeasonName")
+            or ""
+        )
         info["incident_limit"] = 0
         sessions = ir["SessionInfo"]["Sessions"]
         for s in sessions:
@@ -47,6 +52,22 @@ def _parse_session_yaml(ir) -> dict:
             if lim and int(lim) > 0:
                 info["incident_limit"] = int(lim)
                 break
+        try:
+            current_num = int(ir["SessionNum"] or 0)
+        except (KeyError, TypeError, ValueError):
+            current_num = 0
+        info["session_num"] = current_num
+        matched_type = ""
+        for s in sessions:
+            try:
+                if int(s.get("SessionNum", -1)) == current_num:
+                    matched_type = s.get("SessionType", "") or ""
+                    break
+            except (TypeError, ValueError):
+                continue
+        if not matched_type and sessions:
+            matched_type = sessions[0].get("SessionType", "") or ""
+        info["session_type"] = matched_type
     except (KeyError, TypeError, ValueError):
         pass
     try:
@@ -64,6 +85,7 @@ def _parse_session_yaml(ir) -> dict:
         for d in info["drivers"]:
             if d["car_idx"] == player_idx:
                 info["car_name"] = d["car_name"]
+                info["driver"] = d["name"]
                 break
     except (KeyError, TypeError, ValueError):
         info["drivers"] = []
@@ -138,6 +160,10 @@ class IRacingTelemetrySource(TelemetrySource):
         ir_data.track_name = info.get("track_name", "")
         ir_data.track_config = info.get("track_config", "")
         ir_data.car_name = info.get("car_name", "")
+        ir_data.series = info.get("series", "")
+        ir_data.session_type = info.get("session_type", "")
+        ir_data.session_num = info.get("session_num", 0)
+        ir_data.driver = info.get("driver", "")
         ir_data.incident_limit = info.get("incident_limit", 0)
         ir_data.drivers = info.get("drivers", [])
 

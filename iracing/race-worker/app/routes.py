@@ -156,6 +156,20 @@ def create_session(body: SessionCreate, _role: Annotated[Role, Depends(require_a
     return _row_to_session(row)
 
 
+@router.get("/sessions", response_model=list[SessionOut])
+def list_sessions(
+    _role: Annotated[Role, Depends(require_any)],
+    limit: int = Query(50, ge=1, le=200, description="Max sessions to return"),
+):
+    """List recent sessions, newest first. Auth required (app or assistant)."""
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM sessions ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [_row_to_session(r) for r in rows]
+
+
 @router.get("/sessions/active", response_model=list[SessionOut])
 def get_active_sessions(_role: Annotated[Role, Depends(require_any)]):
     with get_db() as db:

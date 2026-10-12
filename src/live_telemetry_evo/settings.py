@@ -251,7 +251,7 @@ def save_race_worker_settings(url: str, app_token: str,
     data = _read()
     data["race_worker"] = {
         "url": url.rstrip("/"),
-        "app_token": app_token.strip(),
+        "app_token": app_token.strip().rstrip(".,;:!?"),
         "enabled": bool(enabled),
     }
     _write(data)

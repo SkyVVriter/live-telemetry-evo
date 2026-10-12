@@ -759,11 +759,22 @@ class TestWinmmBackend:
         assert hasattr(caps, "szPname")
         assert hasattr(caps, "wNumButtons")
 
+    @pytest.mark.skipif(sys.platform != "win32",
+                        reason="JOYCAPSW Windows layout (WCHAR=2, UINT=4)")
+    def test_joycapsw_size_is_728(self):
+        # MMSYSTEM JOYCAPSW: szOEMVxD is MAX_JOYSTICKOEMVXDNAME (260 WCHARs)
+        assert ctypes.sizeof(_JOYCAPSW) == 728
+
     def test_joyinfoex_struct_fields(self):
         info = _JOYINFOEX()
         info.dwSize = ctypes.sizeof(_JOYINFOEX)
         assert hasattr(info, "dwButtons")
         assert info.dwSize > 0
+
+    @pytest.mark.skipif(sys.platform != "win32",
+                        reason="JOYINFOEX Windows layout (DWORD=4)")
+    def test_joyinfoex_size_is_52(self):
+        assert ctypes.sizeof(_JOYINFOEX) == 52
 
     def test_list_joysticks_winmm_with_mock(self):
         from live_telemetry_evo.ptt import input_binding as mod

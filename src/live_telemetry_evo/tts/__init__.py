@@ -15,12 +15,19 @@ from .scheduler import SpeechMessage, SpeechScheduler
 # Import every engine module so @register_engine runs at startup.
 # Guarded so a missing optional dependency (e.g. edge-tts package)
 # doesn't prevent the rest of the app from loading.
+# piper_engine is a stub and must not log an error if the frozen exe
+# omitted it — degrade silently.
+_OPTIONAL_ENGINES = frozenset({"piper_engine"})
+
+
 def _register_all_engines() -> None:
     import importlib
     for mod_name in ("edge_engine", "elevenlabs_engine", "piper_engine"):
         try:
             importlib.import_module(f".{mod_name}", __package__)
         except Exception as _e:
+            if mod_name in _OPTIONAL_ENGINES:
+                continue
             try:
                 from .base import _log_import_error
                 _log_import_error(mod_name, _e)

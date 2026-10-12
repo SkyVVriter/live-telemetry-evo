@@ -49,12 +49,7 @@ from .logbook import log
 GITHUB_API_RELEASES_URL = "https://api.github.com/repos/SkyVVriter/live-telemetry-evo/releases"
 GITHUB_RELEASES_URL = GITHUB_API_RELEASES_URL
 HTTP_TIMEOUT_S = 10
-USER_AGENT = "LiveTelemetryEvo-Updater/1.0"
-_GITHUB_HEADERS = {
-    "Accept": "application/vnd.github+json",
-    "User-Agent": USER_AGENT,
-    "X-GitHub-Api-Version": "2022-11-28",
-}
+# User-Agent / Accept are set after get_current_version() is defined.
 
 
 class SemVer:
@@ -144,6 +139,20 @@ def get_current_version() -> Optional[str]:
                           text, flags=re.MULTILINE)
             return m.group(1) if m else None
     return None
+
+
+def _github_headers() -> dict[str, str]:
+    """Headers required by api.github.com (406 without Accept + User-Agent)."""
+    ver = get_current_version() or "dev"
+    return {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": f"LiveTelemetryEvo/{ver}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+USER_AGENT = _github_headers()["User-Agent"]
+_GITHUB_HEADERS = _github_headers()
 
 
 def install_dir() -> Path:

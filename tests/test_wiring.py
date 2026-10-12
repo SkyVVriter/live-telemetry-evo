@@ -47,6 +47,82 @@ class TestURLNormalization:
         c = RaceWorkerClient(base_url="https://host.com/race/", token="tok")
         assert c.base_url == "https://host.com"
 
+
+class TestTokenSanitization:
+    def test_strip_whitespace(self):
+        from live_telemetry_evo.race_worker_client import _sanitize_token
+        assert _sanitize_token("  abc123  ") == "abc123"
+
+    def test_strip_trailing_period(self):
+        from live_telemetry_evo.race_worker_client import _sanitize_token
+        assert _sanitize_token("mytoken123.") == "mytoken123"
+
+    def test_strip_trailing_punctuation(self):
+        from live_telemetry_evo.race_worker_client import _sanitize_token
+        assert _sanitize_token("tok,") == "tok"
+        assert _sanitize_token("tok;") == "tok"
+        assert _sanitize_token("tok:") == "tok"
+        assert _sanitize_token("tok!") == "tok"
+
+    def test_preserves_valid_token(self):
+        from live_telemetry_evo.race_worker_client import _sanitize_token
+        assert _sanitize_token("abc-123_XYZ") == "abc-123_XYZ"
+
+    def test_client_init_sanitizes(self):
+        from live_telemetry_evo.race_worker_client import RaceWorkerClient
+        c = RaceWorkerClient(base_url="https://host.com", token="tok123. ")
+        assert c.token == "tok123"
+
+    def test_configure_sanitizes(self):
+        from live_telemetry_evo.race_worker_client import RaceWorkerClient
+        c = RaceWorkerClient()
+        c.configure("https://host.com", "tok456.\n")
+        assert c.token == "tok456"
+
+
+class TestConnectionAuth:
+    def test_test_connection_uses_authenticated_endpoint(self):
+        """test_connection must NOT hit /health (unauthenticated)."""
+        from live_telemetry_evo.race_worker_client import RaceWorkerClient
+        import urllib.error
+
+        called_urls = []
+
+        def mock_request(method, url, token, body=None):
+            called_urls.append((method, url))
+            if url.endswith("/race/sessions") and method == "GET":
+                return [{"id": "s1"}]
+            return {}
+
+        with patch("live_telemetry_evo.race_worker_client._request",
+                   side_effect=mock_request):
+            c = RaceWorkerClient(base_url="https://host.com", token="tok")
+            ok, msg = c.test_connection()
+
+        assert ok is True
+        assert "authenticated" in msg
+        assert any(m == "GET" and u.endswith("/race/sessions")
+                   for m, u in called_urls)
+        assert not any("/health" in u for _, u in called_urls)
+        assert not any(m == "POST" for m, _ in called_urls)
+
+    def test_test_connection_reports_401(self):
+        from live_telemetry_evo.race_worker_client import RaceWorkerClient
+        import urllib.error
+
+        def mock_request(method, url, token, body=None):
+            raise urllib.error.HTTPError(
+                url, 401, "Unauthorized", {}, None)
+
+        with patch("live_telemetry_evo.race_worker_client._request",
+                   side_effect=mock_request):
+            c = RaceWorkerClient(base_url="https://host.com", token="bad")
+            ok, msg = c.test_connection()
+
+        assert ok is False
+        assert "401" in msg
+        assert "токен" in msg.lower() or "Unauthorized" in msg
+
     def test_client_configure_normalizes(self):
         from live_telemetry_evo.race_worker_client import RaceWorkerClient
         c = RaceWorkerClient()
@@ -131,7 +207,7 @@ class TestSettingsWiring:
             )
             save_race_worker_settings(
                 url="https://test.com/race/",
-                app_token="tok123",
+                app_token="tok123. ",
                 enabled=True,
             )
             cfg = load_race_worker_settings()

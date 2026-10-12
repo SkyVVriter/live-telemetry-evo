@@ -27,7 +27,123 @@ if sys.platform != "win32":
 # COM fundamentals
 # ---------------------------------------------------------------------------
 _ole32 = ctypes.OleDLL("ole32")
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _dinput_dll = None
+
+# Keep the WNDPROC callback alive for the process lifetime (ctypes will
+# otherwise GC it and DefWindowProcW calls crash).
+_WNDPROC = ctypes.WINFUNCTYPE(
+    ctypes.c_longlong,          # LRESULT
+    ctypes.wintypes.HWND,
+    ctypes.wintypes.UINT,
+    ctypes.wintypes.WPARAM,
+    ctypes.wintypes.LPARAM,
+)
+_user32.DefWindowProcW.argtypes = [
+    ctypes.wintypes.HWND, ctypes.wintypes.UINT,
+    ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM,
+]
+_user32.DefWindowProcW.restype = ctypes.c_longlong
+_wndproc_ref = _WNDPROC(_user32.DefWindowProcW)
+_hidden_hwnd: int = 0
+_hwnd_class_atom = 0
+
+
+class _WNDCLASSEXW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.wintypes.UINT),
+        ("style", ctypes.wintypes.UINT),
+        ("lpfnWndProc", _WNDPROC),
+        ("cbClsExtra", ctypes.c_int),
+        ("cbWndExtra", ctypes.c_int),
+        ("hInstance", ctypes.wintypes.HINSTANCE),
+        ("hIcon", ctypes.wintypes.HICON),
+        ("hCursor", ctypes.wintypes.HCURSOR),
+        ("hbrBackground", ctypes.wintypes.HBRUSH),
+        ("lpszMenuName", ctypes.wintypes.LPCWSTR),
+        ("lpszClassName", ctypes.wintypes.LPCWSTR),
+        ("hIconSm", ctypes.wintypes.HICON),
+    ]
+
+
+_kernel32.GetModuleHandleW.argtypes = [ctypes.wintypes.LPCWSTR]
+_kernel32.GetModuleHandleW.restype = ctypes.wintypes.HMODULE
+_user32.RegisterClassExW.argtypes = [ctypes.POINTER(_WNDCLASSEXW)]
+_user32.RegisterClassExW.restype = ctypes.wintypes.ATOM
+_user32.CreateWindowExW.argtypes = [
+    ctypes.wintypes.DWORD, ctypes.wintypes.LPCWSTR, ctypes.wintypes.LPCWSTR,
+    ctypes.wintypes.DWORD,
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    ctypes.wintypes.HWND, ctypes.wintypes.HMENU,
+    ctypes.wintypes.HINSTANCE, ctypes.wintypes.LPVOID,
+]
+_user32.CreateWindowExW.restype = ctypes.wintypes.HWND
+_user32.GetDesktopWindow.argtypes = []
+_user32.GetDesktopWindow.restype = ctypes.wintypes.HWND
+
+_HWND_MESSAGE = ctypes.wintypes.HWND(-3)
+_CLASS_NAME = "LTE_DInputHidden"
+
+
+def _last_error() -> int:
+    return ctypes.get_last_error()
+
+
+def _create_hidden_hwnd() -> int:
+    """Register a window class and create a message-only HWND.
+
+    Logs GetLastError on every failure. Falls back to GetDesktopWindow.
+    """
+    global _hidden_hwnd, _hwnd_class_atom
+    if _hidden_hwnd:
+        return _hidden_hwnd
+
+    hinstance = _kernel32.GetModuleHandleW(None)
+    if not hinstance:
+        log(f"[dinput] GetModuleHandleW failed: GetLastError={_last_error()}")
+
+    if not _hwnd_class_atom:
+        wc = _WNDCLASSEXW()
+        wc.cbSize = ctypes.sizeof(_WNDCLASSEXW)
+        wc.lpfnWndProc = _wndproc_ref
+        wc.hInstance = hinstance
+        wc.lpszClassName = _CLASS_NAME
+        atom = _user32.RegisterClassExW(ctypes.byref(wc))
+        err = _last_error()
+        if not atom:
+            # 1410 = ERROR_CLASS_ALREADY_EXISTS — reuse the name
+            if err == 1410:
+                log("[dinput] window class already registered")
+            else:
+                log(f"[dinput] RegisterClassExW failed: GetLastError={err}")
+        else:
+            _hwnd_class_atom = atom
+            log(f"[dinput] RegisterClassExW ok atom={atom}")
+
+    hwnd = _user32.CreateWindowExW(
+        0, _CLASS_NAME, "LTE DirectInput",
+        0, 0, 0, 0, 0,
+        _HWND_MESSAGE, None, hinstance, None,
+    )
+    if hwnd:
+        _hidden_hwnd = int(hwnd)
+        log(f"[dinput] hidden HWND created: {_hidden_hwnd}")
+        return _hidden_hwnd
+
+    err = _last_error()
+    log(f"[dinput] CreateWindowExW(HWND_MESSAGE) failed: GetLastError={err}")
+
+    try:
+        desktop = _user32.GetDesktopWindow()
+        if desktop:
+            _hidden_hwnd = int(desktop)
+            log(f"[dinput] using GetDesktopWindow() hwnd={_hidden_hwnd}")
+            return _hidden_hwnd
+        log(f"[dinput] GetDesktopWindow failed: GetLastError={_last_error()}")
+    except Exception as e:
+        log(f"[dinput] GetDesktopWindow error: {e}")
+    return 0
 
 GUID = ctypes.c_ubyte * 16
 
@@ -188,32 +304,37 @@ class DirectInput8:
         except OSError:
             pass
 
-        if hwnd:
-            self._hwnd = ctypes.c_void_p(hwnd)
-        else:
-            try:
-                desktop = ctypes.windll.user32.GetDesktopWindow()
-                self._hwnd = ctypes.c_void_p(desktop)
-            except Exception:
-                pass
+        resolved = hwnd or _create_hidden_hwnd()
+        if resolved:
+            self._hwnd = ctypes.c_void_p(int(resolved))
         if not self._hwnd:
-            log("[dinput] no HWND available for SetCooperativeLevel")
+            log("[dinput] no HWND available for SetCooperativeLevel "
+                f"(GetLastError={_last_error()})")
             return False
 
         try:
             dinput8 = _get_dinput8()
+            dinput8.DirectInput8Create.argtypes = [
+                ctypes.wintypes.HINSTANCE,
+                ctypes.wintypes.DWORD,
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_void_p),
+                ctypes.c_void_p,
+            ]
+            dinput8.DirectInput8Create.restype = ctypes.c_long
             hr = dinput8.DirectInput8Create(
-                ctypes.windll.kernel32.GetModuleHandleW(None),
+                _kernel32.GetModuleHandleW(None),
                 _DIRECTINPUT_VERSION,
                 ctypes.byref(IID_IDirectInput8W),
                 ctypes.byref(self._di),
                 None,
             )
             if hr != 0:
-                log(f"[dinput] DirectInput8Create failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}")
+                log(f"[dinput] DirectInput8Create failed: HRESULT "
+                    f"0x{hr & 0xFFFFFFFF:08X} GetLastError={_last_error()}")
                 return False
         except (OSError, Exception) as e:
-            log(f"[dinput] init failed: {e}")
+            log(f"[dinput] init failed: {e} GetLastError={_last_error()}")
             return False
 
         self._inited = True

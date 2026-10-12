@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
 
 
 # When PyInstaller runs us, ``__file__`` isn't defined on every Python
@@ -144,11 +144,21 @@ try:
 except Exception:
     SOUNDDEVICE_BINARIES = []
 
+# pygame (SDL2) is the last-resort joystick backend. Collect its native
+# DLLs and submodules so `import pygame` works in the frozen exe.
+try:
+    PYGAME_BINARIES = collect_dynamic_libs("pygame")
+    PYGAME_HIDDEN = collect_submodules("pygame")
+except Exception:
+    PYGAME_BINARIES = []
+    PYGAME_HIDDEN = ["pygame", "pygame.joystick", "pygame.event",
+                     "pygame.display"]
+
 
 a = Analysis(
     [str(ENTRYPOINT)],
     pathex=[str(ROOT / "src")],
-    binaries=OPENVR_BINARIES + SOUNDDEVICE_BINARIES,
+    binaries=OPENVR_BINARIES + SOUNDDEVICE_BINARIES + PYGAME_BINARIES,
     datas=DATAS,
     hiddenimports=["openvr", "edge_tts", "irsdk",
                    "sounddevice", "_sounddevice_data",
@@ -157,7 +167,7 @@ a = Analysis(
                    "pynput._util", "pynput._util.win32",
                    "live_telemetry_evo.tts.piper_engine",
                    "live_telemetry_evo.tts.edge_engine",
-                   "live_telemetry_evo.tts.elevenlabs_engine"],
+                   "live_telemetry_evo.tts.elevenlabs_engine"] + PYGAME_HIDDEN,
     hookspath=[],
     runtime_hooks=[],
     excludes=EXCLUDED_MODULES,
