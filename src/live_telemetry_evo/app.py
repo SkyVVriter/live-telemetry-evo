@@ -418,7 +418,9 @@ def run(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
 
     if args.self_test:
-        return _run_self_test()
+        rc = _run_self_test()
+        import os
+        os._exit(rc)
 
     app = QApplication(sys.argv)
     # Config + logs live next to the executable (or in CWD during dev)

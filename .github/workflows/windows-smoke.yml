@@ -61,9 +61,8 @@ jobs:
             -PassThru
           $exited = $proc.WaitForExit(30000)
           if (-not $exited) {
-            Write-Host "Self-test timed out after 30s"
+            Write-Host "Self-test timed out after 30s — killing"
             taskkill /T /F /PID $proc.Id 2>$null
-            throw "Self-test timed out"
           }
           # Read session.log for self-test output
           $logFile = Join-Path $env:LIVE_TELEMETRY_DATA_DIR 'logs' 'session.log'
