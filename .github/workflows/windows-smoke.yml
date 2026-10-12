@@ -51,6 +51,20 @@ jobs:
           echo "SMOKE_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
           echo "SMOKE_EXE_NAME=$($exe.Name)" >> $env:GITHUB_ENV
 
+      - name: Self-test (backend diagnostics)
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath $env:SMOKE_EXE `
+            -ArgumentList "--self-test" `
+            -PassThru -Wait -NoNewWindow -RedirectStandardOutput selftest.log -RedirectStandardError selftest.err
+          Get-Content selftest.log | ForEach-Object { Write-Host $_ }
+          if (Test-Path selftest.err) {
+            Get-Content selftest.err | ForEach-Object { Write-Host "STDERR: $_" }
+          }
+          if ($proc.ExitCode -ne 0) {
+            throw "Self-test failed with exit code $($proc.ExitCode)"
+          }
+
       - name: Prepare smoke-test directories
         shell: pwsh
         run: |

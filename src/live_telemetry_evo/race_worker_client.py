@@ -90,6 +90,14 @@ class RaceWorkerClient:
         except Exception as e:
             return False, str(e)
 
+    def _masked_token(self) -> str:
+        t = self.token
+        if not t:
+            return "(empty)"
+        if len(t) < 8:
+            return "***"
+        return f"…{t[-4:]}"
+
     def create_session(self, **kwargs) -> Optional[str]:
         try:
             url = f"{self.base_url}/race/sessions"
@@ -98,7 +106,8 @@ class RaceWorkerClient:
             log(f"[race-worker] session created: {self._session_id}")
             return self._session_id
         except Exception as e:
-            log(f"[race-worker] create session failed: {e}")
+            log(f"[race-worker] create session failed: {e} "
+                f"(token={self._masked_token()})")
             return None
 
     def post_lap(self, lap_data: dict) -> bool:

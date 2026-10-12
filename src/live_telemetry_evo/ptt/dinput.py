@@ -175,8 +175,12 @@ class DirectInput8:
         self._lock = threading.Lock()
         self._inited = False
 
-    def init(self) -> bool:
-        """Initialize COM and create the IDirectInput8W instance."""
+    def init(self, hwnd: int = 0) -> bool:
+        """Initialize COM and create the IDirectInput8W instance.
+
+        ``hwnd`` is the native window handle for SetCooperativeLevel.
+        Pass ``int(qt_widget.winId())`` from the GUI thread.  If 0,
+        falls back to ``GetDesktopWindow()``."""
         if self._inited:
             return True
         try:
@@ -184,9 +188,16 @@ class DirectInput8:
         except OSError:
             pass
 
-        self._hwnd = self._create_hidden_hwnd()
+        if hwnd:
+            self._hwnd = ctypes.c_void_p(hwnd)
+        else:
+            try:
+                desktop = ctypes.windll.user32.GetDesktopWindow()
+                self._hwnd = ctypes.c_void_p(desktop)
+            except Exception:
+                pass
         if not self._hwnd:
-            log("[dinput] failed to create hidden HWND")
+            log("[dinput] no HWND available for SetCooperativeLevel")
             return False
 
         try:
@@ -207,20 +218,6 @@ class DirectInput8:
 
         self._inited = True
         return True
-
-    def _create_hidden_hwnd(self) -> ctypes.c_void_p:
-        """Create a message-only window for SetCooperativeLevel."""
-        try:
-            user32 = ctypes.windll.user32
-            hwnd = user32.CreateWindowExW(
-                0, "STATIC", "LTE_DInput_Hidden", 0,
-                0, 0, 0, 0,
-                -3,  # HWND_MESSAGE
-                None, None, None,
-            )
-            return ctypes.c_void_p(hwnd) if hwnd else ctypes.c_void_p(0)
-        except Exception:
-            return ctypes.c_void_p(0)
 
     def enumerate(self) -> list[DInputDevice]:
         """Enumerate attached game controllers."""
@@ -423,19 +420,23 @@ class DirectInput8:
                 pass
             self._di = ctypes.c_void_p(0)
 
-        if self._hwnd:
-            try:
-                ctypes.windll.user32.DestroyWindow(self._hwnd)
-            except Exception:
-                pass
-            self._hwnd = ctypes.c_void_p(0)
-
+        self._hwnd = ctypes.c_void_p(0)
         self._inited = False
 
 
 # Module-level singleton (lazy-init)
 _instance: Optional[DirectInput8] = None
 _init_lock = threading.Lock()
+
+
+_provided_hwnd: int = 0
+
+
+def set_hwnd(hwnd: int) -> None:
+    """Set the HWND to use for DirectInput8 cooperative level.
+    Call from the GUI thread with ``int(widget.winId())``."""
+    global _provided_hwnd
+    _provided_hwnd = hwnd
 
 
 def _get_di8() -> Optional[DirectInput8]:
@@ -446,7 +447,7 @@ def _get_di8() -> Optional[DirectInput8]:
         if _instance is not None:
             return _instance
         di = DirectInput8()
-        if di.init():
+        if di.init(hwnd=_provided_hwnd):
             _instance = di
             return di
         return None

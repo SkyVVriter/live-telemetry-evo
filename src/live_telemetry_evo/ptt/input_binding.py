@@ -148,16 +148,29 @@ def list_joysticks_winmm() -> list[WinmmJoystick]:
     funcs = _get_winmm()
     if funcs is None:
         return []
-    joyGetNumDevs, joyGetDevCapsW, _ = funcs
+    joyGetNumDevs, joyGetDevCapsW, joyGetPosEx = funcs
+    num = joyGetNumDevs()
+    log(f"[ptt/input] winmm: joyGetNumDevs={num}, "
+        f"sizeof(JOYCAPSW)={ctypes.sizeof(_JOYCAPSW)}, "
+        f"sizeof(JOYINFOEX)={ctypes.sizeof(_JOYINFOEX)}")
     result = []
-    for i in range(min(joyGetNumDevs(), 16)):
+    for i in range(min(num, 16)):
         caps = _JOYCAPSW()
-        if joyGetDevCapsW(i, ctypes.byref(caps),
-                          ctypes.sizeof(_JOYCAPSW)) == _JOYERR_NOERROR:
+        rc = joyGetDevCapsW(i, ctypes.byref(caps), ctypes.sizeof(_JOYCAPSW))
+        if rc == _JOYERR_NOERROR:
             name = caps.szPname.strip("\x00").strip()
             if name:
                 result.append(WinmmJoystick(
                     i, name, min(caps.wNumButtons, _MAX_JOYSTICK_BUTTONS)))
+                log(f"[ptt/input] winmm [{i}]: {name} ({caps.wNumButtons} btn)")
+        else:
+            info = _JOYINFOEX()
+            info.dwSize = ctypes.sizeof(_JOYINFOEX)
+            info.dwFlags = _JOY_RETURNBUTTONS
+            pos_rc = joyGetPosEx(i, ctypes.byref(info)) if joyGetPosEx else 999
+            if pos_rc == _JOYERR_NOERROR:
+                log(f"[ptt/input] winmm [{i}]: caps failed (rc={rc}) "
+                    f"but joyGetPosEx OK (buttons=0x{info.dwButtons:08X})")
     return result
 
 

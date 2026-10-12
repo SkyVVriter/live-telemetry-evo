@@ -311,6 +311,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help=("start with the overlay hidden (widgets not rendered). "
               "Useful for smoke tests. The tray 'Оверлей' toggle or "
               "configured hotkey brings it back."))
+    parser.add_argument(
+        "--self-test", action="store_true",
+        help="run backend diagnostics and exit with code 0 if all OK")
     vr_group = parser.add_mutually_exclusive_group()
     vr_group.add_argument(
         "--vr", action="store_true",
@@ -325,8 +328,83 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _run_self_test() -> int:
+    """Run backend diagnostics and return 0 if all critical backends work."""
+    results = {}
+    print("=== LiveTelemetryEvo Self-Test ===")
+
+    # TTS engines
+    try:
+        from .tts import list_engines
+        engines = list_engines()
+        print(f"TTS engines: {engines}")
+        results["tts"] = "edge-tts" in engines
+    except Exception as e:
+        print(f"TTS engines: FAIL ({e})")
+        results["tts"] = False
+
+    # pynput keyboard
+    try:
+        from pynput import keyboard  # type: ignore
+        print(f"pynput: OK ({keyboard.__name__})")
+        results["pynput"] = True
+    except ImportError as e:
+        print(f"pynput: FAIL ({e})")
+        results["pynput"] = False
+
+    # sounddevice
+    try:
+        import sounddevice as sd  # type: ignore
+        print(f"sounddevice: OK (PortAudio {sd.get_portaudio_version()[1]})")
+        results["sounddevice"] = True
+    except (ImportError, OSError) as e:
+        print(f"sounddevice: FAIL ({e})")
+        results["sounddevice"] = False
+
+    # DirectInput8
+    if sys.platform == "win32":
+        try:
+            from .ptt.dinput import DirectInput8
+            di = DirectInput8()
+            ok = di.init(hwnd=0)
+            devs = di.enumerate() if ok else []
+            print(f"DirectInput8: {'OK' if ok else 'FAIL'} "
+                  f"({len(devs)} devices)")
+            results["dinput"] = ok
+        except Exception as e:
+            print(f"DirectInput8: FAIL ({e})")
+            results["dinput"] = False
+
+        # winmm
+        from .ptt.input_binding import list_joysticks_winmm
+        wm = list_joysticks_winmm()
+        print(f"winmm: {len(wm)} devices")
+        results["winmm"] = True
+    else:
+        results["dinput"] = True
+        results["winmm"] = True
+
+    # Updater (GitHub API)
+    try:
+        from .updater import UpdateController
+        releases = UpdateController._fetch_releases()
+        print(f"GitHub API: OK ({len(releases)} releases)")
+        results["updater"] = len(releases) > 0
+    except Exception as e:
+        print(f"GitHub API: FAIL ({e})")
+        results["updater"] = False
+
+    all_ok = all(results.values())
+    print(f"\nResults: {results}")
+    print(f"Overall: {'PASS' if all_ok else 'FAIL'}")
+    return 0 if all_ok else 1
+
+
 def run(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
+
+    if args.self_test:
+        return _run_self_test()
 
     app = QApplication(sys.argv)
     # Config + logs live next to the executable (or in CWD during dev)
@@ -738,7 +816,7 @@ def run(argv: list[str] | None = None) -> int:
         widgets_ready[0] = True
         if not overlay_visible[0]:
             window.hide()
-            log("[overlay] overlay hidden (--overlay-hidden): window.hide() called")
+            log("[overlay] overlay hidden on reveal: window.hide() called")
             return
         if visibility.get("engine", True):
             engine.show()
@@ -1082,6 +1160,15 @@ def run(argv: list[str] | None = None) -> int:
         countdown.start(name)
 
     window.show()
+
+    # Provide the overlay window's native handle to DirectInput8 so it
+    # can set a cooperative level without creating its own HWND.
+    try:
+        from .ptt.dinput import set_hwnd
+        set_hwnd(int(window.winId()))
+    except (ImportError, Exception):
+        pass
+
     # Default to click-through ON: a full-screen overlay must not steal mouse
     # input from the game underneath. Toggle from the tray (Windows menu).
     # log=False — this is startup initialisation, not a user action.

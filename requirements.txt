@@ -9,5 +9,7 @@ pyirsdk>=1.3.0; sys_platform == "win32"
 edge-tts>=6.1.0
 # Audio capture for PTT (PortAudio bindings)
 sounddevice>=0.4.6
+# Keyboard listener for PTT binding
+pynput>=1.7.0
 # PyYAML for voice_samples tool manifests (optional, JSON fallback)
 pyyaml>=6.0

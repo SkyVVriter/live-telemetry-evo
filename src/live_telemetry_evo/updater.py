@@ -46,9 +46,15 @@ from PySide6.QtWidgets import QApplication
 from .logbook import log
 
 
-GITHUB_RELEASES_URL = "https://github.com/SkyVVriter/live-telemetry-evo/releases"
+GITHUB_API_RELEASES_URL = "https://api.github.com/repos/SkyVVriter/live-telemetry-evo/releases"
+GITHUB_RELEASES_URL = GITHUB_API_RELEASES_URL
 HTTP_TIMEOUT_S = 10
-USER_AGENT = "live-telemetry-evo-updater"
+USER_AGENT = "LiveTelemetryEvo-Updater/1.0"
+_GITHUB_HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "User-Agent": USER_AGENT,
+    "X-GitHub-Api-Version": "2022-11-28",
+}
 
 
 class SemVer:
@@ -286,27 +292,20 @@ class UpdateChecker(QObject):
 
     @staticmethod
     def _fetch_releases() -> list[dict]:
-        """Fetch the first page of releases (enough for channel selection)."""
-        url = f"{GITHUB_RELEASES_URL}?per_page=30"
-        req = urllib.request.Request(
-            url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": USER_AGENT,
-            },
-        )
+        """Fetch the first page of releases from the GitHub API."""
+        url = f"{GITHUB_API_RELEASES_URL}?per_page=30"
+        req = urllib.request.Request(url, headers=dict(_GITHUB_HEADERS))
         ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S,
                                      context=ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         if isinstance(data, dict):
-            # /releases/latest returns a single dict; wrap it
             return [data]
         return data if isinstance(data, list) else []
 
     @staticmethod
     def _fetch_text(url: str) -> str:
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        req = urllib.request.Request(url, headers=dict(_GITHUB_HEADERS))
         ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S,
                                      context=ctx) as resp:
@@ -333,7 +332,7 @@ class UpdateChecker(QObject):
     @staticmethod
     def _download(url: str, target: Path) -> None:
         tmp = target.with_suffix(target.suffix + ".partial")
-        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        req = urllib.request.Request(url, headers=dict(_GITHUB_HEADERS))
         ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S,
                                      context=ctx) as resp:
