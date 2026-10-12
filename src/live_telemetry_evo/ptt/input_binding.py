@@ -74,6 +74,8 @@ _JOYERR_NOERROR = 0
 _JOY_RETURNBUTTONS = 0x00000080
 
 
+_MAX_JOYSTICKOEMVXDNAME = 260
+
 class _JOYCAPSW(ctypes.Structure):
     _fields_ = [
         ("wMid", ctypes.wintypes.WORD),
@@ -92,7 +94,7 @@ class _JOYCAPSW(ctypes.Structure):
         ("wNumAxes", ctypes.wintypes.UINT),
         ("wMaxButtons", ctypes.wintypes.UINT),
         ("szRegKey", ctypes.wintypes.WCHAR * _MAXPNAMELEN),
-        ("szOEMVxD", ctypes.wintypes.WCHAR * _MAXPNAMELEN),
+        ("szOEMVxD", ctypes.wintypes.WCHAR * _MAX_JOYSTICKOEMVXDNAME),
     ]
 
 
