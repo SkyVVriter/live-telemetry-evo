@@ -198,16 +198,25 @@ class PTTSettingsDialog(QDialog):
 
         self._stt_combo = QComboBox()
         engines = list_stt_engines()
-        self._stt_combo.addItems(engines if engines else ["whisper-api"])
+        if not engines:
+            engines = ["elevenlabs-scribe"]
+        self._stt_combo.addItems(engines)
         idx = self._stt_combo.findText(cfg["stt_engine"])
         if idx >= 0:
             self._stt_combo.setCurrentIndex(idx)
+        self._stt_combo.currentTextChanged.connect(self._on_stt_engine_changed)
         stt_layout.addRow("Движок:", self._stt_combo)
 
         self._api_key_input = QLineEdit(cfg["whisper_api_key"])
         self._api_key_input.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
         self._api_key_input.setPlaceholderText("sk-... или OPENAI_API_KEY из env")
         stt_layout.addRow("API Key:", self._api_key_input)
+
+        self._stt_key_hint = QLabel("")
+        self._stt_key_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
+        self._stt_key_hint.setWordWrap(True)
+        stt_layout.addRow("", self._stt_key_hint)
+        self._on_stt_engine_changed(self._stt_combo.currentText())
 
         main.addWidget(stt_group)
 
@@ -278,6 +287,21 @@ class PTTSettingsDialog(QDialog):
     def _refresh_devices(self) -> None:
         cfg = load_ptt_settings()
         self._populate_device_combo(cfg)
+
+    def _on_stt_engine_changed(self, engine_name: str) -> None:
+        if engine_name == "elevenlabs-scribe":
+            self._api_key_input.setPlaceholderText(
+                "оставьте пустым — используется ключ из TTS")
+            self._stt_key_hint.setText(
+                "Используется API-ключ ElevenLabs из настроек TTS. "
+                "Введите ключ здесь только для отдельного ключа STT.")
+        elif engine_name == "whisper-api":
+            self._api_key_input.setPlaceholderText(
+                "sk-... или OPENAI_API_KEY из env")
+            self._stt_key_hint.setText("")
+        else:
+            self._api_key_input.setPlaceholderText("")
+            self._stt_key_hint.setText("")
 
     def _refresh_joystick_info(self) -> None:
         joys = list_joysticks()

@@ -162,6 +162,105 @@ class FasterWhisperEngine(STTEngine):
             return TranscriptionResult(text="", language=language or "")
 
 
+@register_stt_engine
+class ElevenLabsScribeEngine(STTEngine):
+    """ElevenLabs Scribe speech-to-text (``scribe_v1`` model).
+
+    Uses the ElevenLabs REST API directly (no SDK).  API key is read
+    from PTT settings first; if empty, falls back to the shared
+    ElevenLabs TTS key in the ``elevenlabs`` settings block, then to
+    the ``ELEVENLABS_API_KEY`` env var.  The key is never logged.
+    """
+
+    name = "elevenlabs-scribe"
+
+    def __init__(self) -> None:
+        self.api_key: str = ""
+        self.model_id: str = "scribe_v1"
+        self.language_code: str = ""
+
+    def _resolve_api_key(self) -> str:
+        if self.api_key:
+            return self.api_key
+        try:
+            from ..settings import _read
+            data = _read()
+            el = data.get("elevenlabs", {})
+            if isinstance(el, dict):
+                key = el.get("api_key", "")
+                if key:
+                    return str(key)
+        except Exception:
+            pass
+        import os
+        return os.environ.get("ELEVENLABS_API_KEY", "")
+
+    def transcribe(self, wav_bytes: bytes,
+                   language: str | None = None) -> TranscriptionResult:
+        import io
+        import json
+        import ssl
+        import urllib.error
+        import urllib.request
+
+        api_key = self._resolve_api_key()
+        if not api_key:
+            log("[stt/elevenlabs-scribe] no API key configured")
+            return TranscriptionResult(text="", language=language or "")
+
+        boundary = "----LTEScribeBoundary"
+        body = io.BytesIO()
+
+        def _field(name: str, value: str) -> None:
+            body.write(f"--{boundary}\r\n".encode())
+            body.write(
+                f"Content-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+                .encode())
+            body.write(f"{value}\r\n".encode())
+
+        _field("model_id", self.model_id)
+        lang = language or self.language_code
+        if lang:
+            _field("language_code", lang)
+
+        body.write(f"--{boundary}\r\n".encode())
+        body.write(
+            b"Content-Disposition: form-data; name=\"file\"; "
+            b"filename=\"recording.wav\"\r\n"
+            b"Content-Type: audio/wav\r\n\r\n")
+        body.write(wav_bytes)
+        body.write(b"\r\n")
+        body.write(f"--{boundary}--\r\n".encode())
+
+        payload = body.getvalue()
+        url = "https://api.elevenlabs.io/v1/speech-to-text"
+        req = urllib.request.Request(
+            url, data=payload, method="POST",
+            headers={
+                "xi-api-key": api_key,
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json",
+                "User-Agent": "LiveTelemetryEvo-STT/1.0",
+            },
+        )
+        try:
+            ctx = ssl.create_default_context()
+            with urllib.request.urlopen(req, timeout=10,
+                                        context=ctx) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            text = str(data.get("text", "")).strip()
+            detected = language or lang or _guess_language(text)
+            return TranscriptionResult(text=text, language=detected)
+        except urllib.error.HTTPError as e:
+            status = e.code
+            log(f"[stt/elevenlabs-scribe] HTTP {status}")
+            return TranscriptionResult(text="", language=language or "")
+        except Exception as e:
+            err_type = type(e).__name__
+            log(f"[stt/elevenlabs-scribe] request failed: {err_type}")
+            return TranscriptionResult(text="", language=language or "")
+
+
 def _guess_language(text: str) -> str:
     """Simple heuristic: if text contains Cyrillic characters, it's Russian."""
     for ch in text:

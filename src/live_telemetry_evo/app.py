@@ -930,8 +930,9 @@ def run(argv: list[str] | None = None) -> int:
             if stt is None:
                 log("[ptt] no STT engine available")
                 return
-            if cfg["stt_engine"] == "whisper-api" and cfg.get("whisper_api_key"):
-                stt.configure(api_key=cfg["whisper_api_key"])
+            ptt_key = cfg.get("whisper_api_key", "")
+            if ptt_key:
+                stt.configure(api_key=ptt_key)
             result = stt.transcribe(wav_bytes)
             if not result.text:
                 log("[ptt] empty transcription")

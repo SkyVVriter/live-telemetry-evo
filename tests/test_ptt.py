@@ -22,6 +22,7 @@ from live_telemetry_evo.ptt.input_binding import (
 )
 from live_telemetry_evo.ptt.stt import (
     TranscriptionResult, WhisperAPIEngine, FasterWhisperEngine,
+    ElevenLabsScribeEngine,
     list_stt_engines, get_stt_engine, _guess_language,
     register_stt_engine, STTEngine,
 )
@@ -223,6 +224,7 @@ class TestSTTRegistry:
         engines = list_stt_engines()
         assert "whisper-api" in engines
         assert "faster-whisper" in engines
+        assert "elevenlabs-scribe" in engines
 
     def test_get_engine(self):
         e = get_stt_engine("whisper-api")
@@ -260,6 +262,126 @@ class TestFasterWhisper:
         with patch.dict("sys.modules", {"faster_whisper": None}):
             result = engine.transcribe(b"RIFF" + b"\x00" * 100)
         assert result.text == ""
+
+
+class TestElevenLabsScribe:
+    def test_in_registry(self):
+        e = get_stt_engine("elevenlabs-scribe")
+        assert e is not None
+        assert e.name == "elevenlabs-scribe"
+
+    def test_no_api_key_returns_empty(self):
+        engine = ElevenLabsScribeEngine()
+        engine.api_key = ""
+        with patch.dict("os.environ", {}, clear=True), \
+             patch("live_telemetry_evo.ptt.stt.ElevenLabsScribeEngine._resolve_api_key",
+                   return_value=""):
+            result = engine.transcribe(b"RIFF" + b"\x00" * 100)
+        assert result.text == ""
+
+    def test_successful_transcription(self):
+        engine = ElevenLabsScribeEngine()
+        engine.api_key = "test-key"
+
+        response_json = json.dumps({"text": "Привет мир"}).encode()
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = response_json
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_open:
+            result = engine.transcribe(b"RIFF" + b"\x00" * 100)
+
+        assert result.text == "Привет мир"
+        assert result.language == "ru"
+        call_args = mock_open.call_args
+        req = call_args[0][0]
+        assert req.get_header("Xi-api-key") == "test-key"
+        assert "multipart/form-data" in req.get_header("Content-type")
+        body = req.data
+        assert b"scribe_v1" in body
+        assert b"recording.wav" in body
+
+    def test_language_code_sent(self):
+        engine = ElevenLabsScribeEngine()
+        engine.api_key = "test-key"
+        engine.language_code = "en"
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"text": "hello"}).encode()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_open:
+            result = engine.transcribe(b"RIFF" + b"\x00" * 100, language="en")
+
+        assert result.text == "hello"
+        body = mock_open.call_args[0][0].data
+        assert b"language_code" in body
+        assert b"en" in body
+
+    def test_http_error_logged(self):
+        import urllib.error
+        engine = ElevenLabsScribeEngine()
+        engine.api_key = "test-key"
+
+        with patch("urllib.request.urlopen",
+                   side_effect=urllib.error.HTTPError(
+                       "url", 429, "rate limit", {}, None)):
+            result = engine.transcribe(b"RIFF" + b"\x00" * 100)
+
+        assert result.text == ""
+
+    def test_timeout_logged(self):
+        engine = ElevenLabsScribeEngine()
+        engine.api_key = "test-key"
+
+        with patch("urllib.request.urlopen",
+                   side_effect=TimeoutError("timed out")):
+            result = engine.transcribe(b"RIFF" + b"\x00" * 100)
+
+        assert result.text == ""
+
+    def test_resolves_tts_api_key(self, tmp_path):
+        """Falls back to the shared ElevenLabs TTS key."""
+        from live_telemetry_evo import settings
+        orig = settings._positions_path
+        settings._positions_path = lambda: tmp_path / "positions.json"
+        try:
+            from live_telemetry_evo.settings import _write
+            _write({"elevenlabs": {"api_key": "shared-tts-key"}})
+            engine = ElevenLabsScribeEngine()
+            engine.api_key = ""
+            with patch.dict("os.environ", {}, clear=True):
+                key = engine._resolve_api_key()
+            assert key == "shared-tts-key"
+        finally:
+            settings._positions_path = orig
+
+    def test_no_key_leak_in_source(self):
+        """Ensure API keys are never logged in stt.py."""
+        import live_telemetry_evo.ptt.stt as mod
+        source = Path(mod.__file__).read_text(encoding="utf-8")
+        for i, line in enumerate(source.splitlines(), 1):
+            if "log(" in line:
+                assert "api_key" not in line.lower() or \
+                       "no api key" in line.lower(), \
+                    f"Potential key leak at line {i}: {line.strip()}"
+
+    def test_default_stt_engine_is_scribe(self, tmp_path):
+        """New installs should default to elevenlabs-scribe."""
+        from live_telemetry_evo import settings
+        orig = settings._positions_path
+        settings._positions_path = lambda: tmp_path / "positions.json"
+        try:
+            cfg = settings.load_ptt_settings()
+            assert cfg["stt_engine"] == "elevenlabs-scribe"
+        finally:
+            settings._positions_path = orig
+
+
+import json
 
 
 # -- Intent handling -------------------------------------------------------

@@ -348,7 +348,7 @@ def load_ptt_settings() -> dict:
         "device_index": ptt.get("device_index"),
         "device_name": str(ptt.get("device_name", "")),
         "device_hostapi": str(ptt.get("device_hostapi", "")),
-        "stt_engine": str(ptt.get("stt_engine", "whisper-api")),
+        "stt_engine": str(ptt.get("stt_engine", "elevenlabs-scribe")),
         "whisper_api_key": str(ptt.get("whisper_api_key", "")),
         "whisper_model_size": str(ptt.get("whisper_model_size", "base")),
         "binding": binding,

@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.7] - 2026-10-12
+
+### Added
+- **ElevenLabs Scribe STT engine** (`elevenlabs-scribe`): POST to `/v1/speech-to-text` with multipart `model_id=scribe_v1` and WAV file. Supports optional `language_code` (default auto; `ru`/`en`). Now the default STT engine for new installs.
+- Scribe engine reuses the ElevenLabs API key from TTS settings (single shared key). PTT dialog shows "uses ElevenLabs key from TTS" hint with option to override via a separate key field.
+- 9 new tests: registry, mocked HTTP (success, language_code, HTTP error, timeout), TTS key fallback, no-key-leak source scan, default engine check.
+
 ## [0.9.0-test.6] - 2026-10-12
 
 ### Fixed
