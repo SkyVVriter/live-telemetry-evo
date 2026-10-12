@@ -356,7 +356,7 @@ def _run_self_test() -> int:
         )
         built = build_dijoystate2_data_format()
         js_sz = ctypes.sizeof(_DIJOYSTATE2)
-        ok_fmt = (
+        ok_fmt = bool(
             js_sz == DIJOYSTATE2_SIZE
             and built.data_size == DIJOYSTATE2_SIZE
             and built.num_objs == _DF_JOYSTICK2_NUM_OBJS
