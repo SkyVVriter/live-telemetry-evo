@@ -37,6 +37,11 @@ class DriverContext:
     car_ahead_name: str = ""
     car_behind_name: str = ""
     laps_remaining: int = 0
+    speed_kmh: float = 0.0
+    throttle: float = 0.0
+    brake: float = 0.0
+    steering_rad: float = 0.0
+    yaw_rate: float = 0.0
 
 
 _LOCAL_COMMANDS: dict[str, list[str]] = {
@@ -139,7 +144,13 @@ class IntentHandler:
         self.get_context = get_context
 
     def handle(self, text: str, audio_duration: float = 0.0) -> str:
-        """Process transcribed text. Returns the intent name or 'feedback'."""
+        """Process transcribed text. Returns the intent name or 'feedback'.
+
+        Every transcript is sent to race-worker as a ``driver_feedback``
+        event (with telemetry snapshot) so it is retrievable via
+        ``/race/state?since=``. Local commands additionally produce a
+        spoken TTS response.
+        """
         if not text.strip():
             return "empty"
 
@@ -153,9 +164,11 @@ class IntentHandler:
                 log(f"[ptt/intent] local command '{intent}': {response}")
                 if self.on_speak:
                     self.on_speak(response)
-                return intent
 
-        log(f"[ptt/intent] driver feedback: {text[:80]}")
         if self.on_driver_feedback:
             self.on_driver_feedback(text, audio_duration, ctx)
+
+        if intent is not None:
+            return intent
+        log(f"[ptt/intent] driver feedback: {text[:80]}")
         return "feedback"

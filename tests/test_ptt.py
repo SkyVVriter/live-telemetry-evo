@@ -667,6 +667,85 @@ class TestBindingSignalBridge:
 
 # -- App quitOnLastWindowClosed check ----------------------------------------
 
+class TestDriverFeedbackAlwaysSent:
+    """Every PTT transcript must be sent as driver_feedback, including
+    local commands (status, fuel, etc.)."""
+
+    def test_local_command_also_sends_feedback(self):
+        spoken = []
+        feedback = []
+
+        handler = IntentHandler(
+            on_speak=lambda t: spoken.append(t),
+            on_driver_feedback=lambda t, d, c: feedback.append(
+                {"text": t, "duration": d}),
+            get_context=lambda: DriverContext(position=3, lap=5),
+        )
+        result = handler.handle("статус", audio_duration=1.5)
+        assert result == "status"
+        assert len(spoken) == 1
+        assert len(feedback) == 1
+        assert feedback[0]["text"] == "статус"
+        assert feedback[0]["duration"] == 1.5
+
+    def test_unmatched_sends_feedback(self):
+        feedback = []
+        handler = IntentHandler(
+            on_driver_feedback=lambda t, d, c: feedback.append(t),
+            get_context=lambda: DriverContext(),
+        )
+        handler.handle("запасной выход слева", audio_duration=2.0)
+        assert len(feedback) == 1
+        assert feedback[0] == "запасной выход слева"
+
+    def test_context_has_telemetry_fields(self):
+        ctx = DriverContext(
+            speed_kmh=245.3, throttle=0.95, brake=0.0,
+            steering_rad=-0.12, yaw_rate=0.03,
+        )
+        assert ctx.speed_kmh == 245.3
+        assert ctx.throttle == 0.95
+        assert ctx.steering_rad == -0.12
+
+    def test_feedback_payload_structure(self):
+        """The on_driver_feedback callback receives DriverContext with
+        telemetry fields that the app.py handler serializes into the
+        event payload."""
+        captured = []
+
+        def on_fb(text, duration, ctx):
+            captured.append({
+                "text": text,
+                "speed": ctx.speed_kmh,
+                "throttle": ctx.throttle,
+                "brake": ctx.brake,
+                "steering": ctx.steering_rad,
+                "yaw": ctx.yaw_rate,
+            })
+
+        handler = IntentHandler(
+            on_driver_feedback=on_fb,
+            get_context=lambda: DriverContext(
+                speed_kmh=200.0, throttle=0.8, brake=0.1,
+                steering_rad=-0.05, yaw_rate=0.02,
+            ),
+        )
+        handler.handle("radio check", audio_duration=1.0)
+        assert len(captured) == 1
+        assert captured[0]["speed"] == 200.0
+        assert captured[0]["throttle"] == 0.8
+        assert captured[0]["brake"] == 0.1
+
+    def test_empty_text_not_sent(self):
+        feedback = []
+        handler = IntentHandler(
+            on_driver_feedback=lambda t, d, c: feedback.append(t),
+            get_context=lambda: DriverContext(),
+        )
+        handler.handle("", audio_duration=0.0)
+        assert len(feedback) == 0
+
+
 class TestWinmmBackend:
     """Test the winmm joystick backend with mocked ctypes."""
 

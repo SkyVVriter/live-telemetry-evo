@@ -889,6 +889,7 @@ def run(argv: list[str] | None = None) -> int:
             return DriverContext()
         ir = f.iracing
         eng = f.engine
+        inp = f.inputs
         summary = _lap_builder.current_summary()
         corner = None
         if _lap_builder.track_profile:
@@ -904,22 +905,52 @@ def run(argv: list[str] | None = None) -> int:
             incident_limit_dq=_incident_tracker.thresholds.dq_limit,
             fuel_remaining=eng.fuel_liters,
             fuel_per_lap=summary.fuel_used if summary.fuel_used > 0 else 0.0,
+            speed_kmh=eng.speed_kmh,
+            throttle=inp.throttle,
+            brake=inp.brake,
+            steering_rad=ir.steering_angle_rad,
+            yaw_rate=ir.yaw_rate,
         )
 
+    _feedback_queue: list[dict] = []
+
     def _on_driver_feedback(text: str, duration: float, ctx: DriverContext) -> None:
-        if _rw_client is not None:
-            _rw_client.post_event({
-                "type": "driver_feedback",
-                "message": text,
-                "payload": {
-                    "transcript": text,
-                    "audio_duration_s": round(duration, 1),
-                    "lap": ctx.lap,
-                    "lap_dist_pct": round(ctx.lap_dist_pct, 4),
-                    "corner": ctx.corner_name,
-                    "position": ctx.position,
+        import time as _time
+        event = {
+            "type": "driver_feedback",
+            "message": text,
+            "payload": {
+                "transcript": text,
+                "audio_duration_s": round(duration, 1),
+                "timestamp": _time.time(),
+                "lap": ctx.lap,
+                "lap_dist_pct": round(ctx.lap_dist_pct, 4),
+                "corner": ctx.corner_name,
+                "position": ctx.position,
+                "telemetry": {
+                    "speed_kmh": round(ctx.speed_kmh, 1),
+                    "throttle": round(ctx.throttle, 3),
+                    "brake": round(ctx.brake, 3),
+                    "steering_rad": round(ctx.steering_rad, 4),
+                    "yaw_rate": round(ctx.yaw_rate, 4),
                 },
-            })
+            },
+        }
+        if _rw_client is not None:
+            _drain_feedback_queue()
+            if not _rw_client.post_event(event):
+                _feedback_queue.append(event)
+                log("[ptt] driver_feedback queued (worker unavailable)")
+        else:
+            _feedback_queue.append(event)
+
+    def _drain_feedback_queue() -> None:
+        while _feedback_queue and _rw_client is not None:
+            ev = _feedback_queue[0]
+            if _rw_client.post_event(ev):
+                _feedback_queue.pop(0)
+            else:
+                break
 
     def _on_ptt_audio(wav_bytes: bytes, duration: float) -> None:
         import threading as _th
