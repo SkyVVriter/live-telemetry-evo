@@ -20,10 +20,12 @@ from .race_engineer.incidents import IncidentTracker, IncidentSeverity
 from .race_engineer.lap_summary import LapSummaryBuilder
 from .race_engineer.proximity import FasterCarBehindDetector
 from .race_worker_client import RaceWorkerClient
-from .settings import (delete_entries, load_polling_hz, load_positions,
+from .settings import (delete_entries, load_overlay_visible, load_polling_hz,
+                        load_positions,
                         load_race_worker_settings, load_release_channel,
                         load_size_index, load_visibility, load_vr_distance,
-                        load_vr_placement, load_vr_spread, save_polling_hz,
+                        load_vr_placement, load_vr_spread,
+                        save_overlay_visible, save_polling_hz,
                         save_position, save_size_index, save_visibility,
                         save_vr_distance, save_vr_placement, save_vr_spread)
 from .sources import make_source
@@ -304,6 +306,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help=("open a settings dialog on startup for smoke-test "
               "screenshots, e.g. --open-dialog race_worker or "
               "--open-dialog tts. Accepts a pipe-separated list."))
+    parser.add_argument(
+        "--overlay-hidden", action="store_true",
+        help=("start with the overlay hidden (widgets not rendered). "
+              "Useful for smoke tests. The tray 'Оверлей' toggle or "
+              "configured hotkey brings it back."))
     vr_group = parser.add_mutually_exclusive_group()
     vr_group.add_argument(
         "--vr", action="store_true",
@@ -388,6 +395,49 @@ def run(argv: list[str] | None = None) -> int:
         view = _all_views.get(key)
         return bool(view is not None and view.isVisible())
 
+    # --- Overlay visibility toggle ------------------------------------
+    # Independent of the race-engineer / TTS / PTT pipeline: hiding the
+    # overlay stops rendering but the source, bus, engineer, and speech
+    # scheduler keep running so no telemetry or voice data is lost.
+    overlay_visible = [False if args.overlay_hidden else load_overlay_visible()]
+
+    def _set_overlay_visible(visible: bool) -> None:
+        overlay_visible[0] = visible
+        save_overlay_visible(visible)
+        if visible:
+            engineer_timer.stop()
+            vis = load_visibility()
+            if widgets_ready[0]:
+                if vis.get("engine", True):
+                    engine.show()
+                if vis.get("inputs", False):
+                    inputs.show()
+                for wid, view in wheels.items():
+                    if vis.get(wid, True):
+                        view.show()
+            if not vr.is_running():
+                repaint_timer.start()
+            else:
+                vr_submit_timer.start()
+            window.setWindowOpacity(1.0 if not vr.is_running() else 0.0)
+        else:
+            repaint_timer.stop()
+            vr_submit_timer.stop()
+            if game_detected[0]:
+                engineer_timer.start()
+            engine.hide()
+            inputs.hide()
+            for view in wheels.values():
+                view.hide()
+            window.setWindowOpacity(0.0)
+        log_action(f"overlay {'shown' if visible else 'hidden'}")
+
+    def _toggle_overlay() -> None:
+        _set_overlay_visible(not overlay_visible[0])
+
+    def _is_overlay_visible() -> bool:
+        return overlay_visible[0]
+
     # --- Telemetry transport: bus + repaint timer + worker thread ----
     bus = FrameBus()
     logger = CsvLogger(bus)
@@ -412,6 +462,19 @@ def run(argv: list[str] | None = None) -> int:
 
     # pylint: disable-next=no-member  # QTimer.timeout is a PySide6 Signal
     repaint_timer.timeout.connect(_on_repaint)
+
+    # Headless engineer timer: keeps the race-engineer / TTS pipeline
+    # ticking when the overlay is hidden and the repaint timer is stopped.
+    engineer_timer = QTimer(window)
+    engineer_timer.setInterval(int(1000 / refresh_hz))
+
+    def _on_engineer_tick() -> None:
+        f = bus.latest()
+        if f is not None:
+            _process_iracing_frame(f)
+
+    # pylint: disable-next=no-member
+    engineer_timer.timeout.connect(_on_engineer_tick)
     # Started after the source goes live so we don't repaint before the
     # bus has anything; ``_start_source`` flips it on.
 
@@ -620,6 +683,8 @@ def run(argv: list[str] | None = None) -> int:
         on_open_logs_folder=_open_logs_folder,
         on_quit=app.quit,
         updater=window._updater,
+        on_toggle_overlay=_toggle_overlay,
+        is_overlay_visible=_is_overlay_visible,
         reset_shortcut=HOTKEY_RESET_LABEL,
         quit_shortcut=HOTKEY_QUIT_LABEL,
         logging_shortcut=HOTKEY_LOG_LABEL,
@@ -672,11 +737,10 @@ def run(argv: list[str] | None = None) -> int:
 
     def _reveal_widgets() -> None:
         widgets_ready[0] = True
+        if not overlay_visible[0]:
+            return
         if visibility.get("engine", True):
             engine.show()
-        # Inputs defaults to hidden (Phase-3 widget), but honours an explicit
-        # persisted flag so the tray "Widgets" toggle survives a restart like
-        # the others — note the default is False here, not True.
         if visibility.get("inputs", False):
             inputs.show()
         for wid, view in wheels.items():
@@ -966,8 +1030,9 @@ def run(argv: list[str] | None = None) -> int:
         window._source_thread = thread
         # Now that frames will start flowing, kick the UI-side paint
         # loop — unless VR is already live, where the VR tick owns frame
-        # dispatch and the desktop overlay is invisible.
-        if not vr.is_running():
+        # dispatch and the desktop overlay is invisible, or the overlay
+        # is hidden (no need to repaint invisible widgets).
+        if not vr.is_running() and overlay_visible[0]:
             repaint_timer.start()
 
         log(
@@ -985,6 +1050,9 @@ def run(argv: list[str] | None = None) -> int:
     # input from the game underneath. Toggle from the tray (Windows menu).
     # log=False — this is startup initialisation, not a user action.
     window.toggle_click_through(log=False)
+
+    if not overlay_visible[0]:
+        window.setWindowOpacity(0.0)
 
     if args.source == "auto":
         detection = DetectionView(window)
@@ -1015,7 +1083,7 @@ def run(argv: list[str] | None = None) -> int:
     vr_tick_ema_ms = [0.0]  # smoothed tick cost, for the step-down
 
     def _vr_submit() -> None:
-        if not vr.is_running():
+        if not vr.is_running() or not overlay_visible[0]:
             return
         t0 = time.perf_counter()
         f = bus.latest()

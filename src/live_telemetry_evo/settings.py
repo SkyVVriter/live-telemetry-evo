@@ -300,6 +300,37 @@ def save_cloud_settings(
 # PTT (Push-to-Talk) Settings
 # ---------------------------------------------------------------------------
 
+def load_overlay_visible(default: bool = True) -> bool:
+    """Return the persisted overlay-visible flag, defaulting to ``True``."""
+    val = _read().get("overlay_visible")
+    if isinstance(val, bool):
+        return val
+    return default
+
+
+def save_overlay_visible(visible: bool) -> None:
+    data = _read()
+    data["overlay_visible"] = bool(visible)
+    _write(data)
+
+
+def load_overlay_hotkey() -> dict | None:
+    """Return the persisted overlay-toggle hotkey binding dict, or ``None``."""
+    val = _read().get("overlay_hotkey")
+    if isinstance(val, dict):
+        return dict(val)
+    return None
+
+
+def save_overlay_hotkey(binding_dict: dict | None) -> None:
+    data = _read()
+    if binding_dict is None:
+        data.pop("overlay_hotkey", None)
+    else:
+        data["overlay_hotkey"] = binding_dict
+    _write(data)
+
+
 def load_ptt_settings() -> dict:
     data = _read()
     ptt = data.get("ptt", {})

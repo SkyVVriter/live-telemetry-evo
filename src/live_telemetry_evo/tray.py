@@ -57,6 +57,8 @@ def make_tray(
     on_open_logs_folder: Callable[[], None],
     on_quit: Callable[[], None],
     updater: UpdateController | None = None,
+    on_toggle_overlay: Callable[[], None] | None = None,
+    is_overlay_visible: Callable[[], bool] | None = None,
     reset_shortcut: str | None = None,
     quit_shortcut: str | None = None,
     logging_shortcut: str | None = None,
@@ -95,6 +97,16 @@ def make_tray(
     tray.setToolTip("Live Telemetry Evo")
 
     menu = QMenu(parent)
+
+    # ---- Оверлей (overlay show/hide toggle) ---------------------------
+    overlay_action: QAction | None = None
+    if on_toggle_overlay is not None and is_overlay_visible is not None:
+        overlay_action = QAction("Оверлей", menu)
+        overlay_action.setCheckable(True)
+        overlay_action.setChecked(is_overlay_visible())
+        overlay_action.triggered.connect(lambda _checked: on_toggle_overlay())
+        menu.addAction(overlay_action)
+        menu.addSeparator()
 
     # The tray menu is organised into three top-level categories — Data,
     # VR, Windows — followed by Check for Updates and Quit. Each category
@@ -388,6 +400,8 @@ def make_tray(
     menu.addAction(quit_action)
 
     def _refresh_state() -> None:
+        if overlay_action is not None and is_overlay_visible is not None:
+            overlay_action.setChecked(is_overlay_visible())
         click_through_action.setChecked(is_click_through())
         cur = current_size_index()
         for i, a in enumerate(size_actions):

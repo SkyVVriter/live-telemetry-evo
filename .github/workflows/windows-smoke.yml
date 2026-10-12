@@ -94,6 +94,23 @@ jobs:
           Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
 
+      # ---- Phase 1b: Overlay hidden (toggle off) ----
+      - name: "Screenshot 1b: Overlay hidden"
+        shell: pwsh
+        run: |
+          . $env:GITHUB_WORKSPACE\Take-SmokeScreenshot.ps1
+          $csv = Join-Path $env:GITHUB_WORKSPACE 'tests\fixtures\sample_replay.csv'
+          $dataDir = Join-Path $env:GITHUB_WORKSPACE 'smoke-logs\run-hidden'
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          $env:LIVE_TELEMETRY_DATA_DIR = $dataDir
+          $proc = Start-Process -FilePath $env:SMOKE_EXE `
+            -ArgumentList "--source","iracing-replay","--replay-csv",$csv,"--novr","--overlay-hidden" `
+            -PassThru
+          Start-Sleep -Seconds 10
+          Take-SmokeScreenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' '01b-overlay-hidden.png')
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+
       # ---- Phase 2: Race Worker dialog ----
       - name: "Screenshot 2: Race Worker dialog"
         shell: pwsh
@@ -151,8 +168,8 @@ jobs:
         run: |
           $ssDir = Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots'
           $pngs = Get-ChildItem -Path $ssDir -Filter '*.png'
-          if ($pngs.Count -lt 4) {
-            throw "Expected at least 4 screenshots, found $($pngs.Count)"
+          if ($pngs.Count -lt 5) {
+            throw "Expected at least 5 screenshots, found $($pngs.Count)"
           }
 
           # Compute hashes and verify they are not ALL identical

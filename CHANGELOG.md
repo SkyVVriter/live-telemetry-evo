@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.3] - 2026-10-12
+
+### Added
+- **Overlay toggle**: checkable tray menu item "Оверлей" to show/hide the telemetry overlay independently of the race-engineer, TTS, and PTT pipelines (which keep running when hidden).
+- Optional global hotkey for the overlay toggle, configurable in settings (`overlay_hotkey` in positions.json). Supports keyboard key or wheel button via the existing PTT input binding code.
+- Overlay visibility state persisted in `positions.json` (`overlay_visible` key) and restored on startup.
+- CLI flag `--overlay-hidden` to start with the overlay hidden (useful for smoke tests and automation).
+- When hidden, widgets stop rendering/repainting to save CPU; the telemetry source, frame bus, race-engineer analysis, and speech scheduler continue uninterrupted.
+- Headless engineer timer keeps the iRacing race-engineer pipeline ticking when the overlay is hidden.
+- Smoke workflow screenshot with overlay hidden (`01b-overlay-hidden.png`).
+- 14 new tests for overlay toggle state logic and settings persistence.
+
 ## [0.8.1] - 2026-08-20
 
 ### Fixed
