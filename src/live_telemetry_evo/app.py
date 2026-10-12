@@ -382,12 +382,16 @@ def _run_self_test() -> int:
             _p(f"DirectInput8: SKIP ({e})")
             results["dinput"] = True
 
-        from .ptt.input_binding import list_joysticks_winmm, _JOYCAPSW
-        sz = ctypes.sizeof(_JOYCAPSW)
-        _p(f"winmm: sizeof(JOYCAPSW)={sz} (expected 728)")
-        results["winmm_struct"] = sz == 728
-        wm = list_joysticks_winmm()
-        _p(f"winmm: {len(wm)} devices")
+        try:
+            from .ptt.input_binding import list_joysticks_winmm, _JOYCAPSW
+            sz = ctypes.sizeof(_JOYCAPSW)
+            _p(f"winmm: sizeof(JOYCAPSW)={sz} (expected 728)")
+            results["winmm_struct"] = sz == 728
+            wm = list_joysticks_winmm()
+            _p(f"winmm: {len(wm)} devices")
+        except Exception as e:
+            _p(f"winmm: FAIL ({e})")
+            results["winmm_struct"] = False
     else:
         results["dinput"] = True
         results["winmm_struct"] = True
@@ -418,8 +422,14 @@ def run(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
 
     if args.self_test:
+        import os, threading
+        def _self_test_watchdog():
+            import time
+            time.sleep(20)
+            print("[self-test] watchdog: forcing exit after 20s")
+            os._exit(2)
+        threading.Thread(target=_self_test_watchdog, daemon=True).start()
         rc = _run_self_test()
-        import os
         os._exit(rc)
 
     app = QApplication(sys.argv)
