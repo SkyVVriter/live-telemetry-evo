@@ -330,35 +330,42 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 def _run_self_test() -> int:
     """Run backend diagnostics and return 0 if all critical backends work."""
+    from .logbook import log as _log
+
     results = {}
-    print("=== LiveTelemetryEvo Self-Test ===")
+
+    def _p(msg):
+        print(msg)
+        _log(f"[self-test] {msg}")
+
+    _p("=== LiveTelemetryEvo Self-Test ===")
 
     # TTS engines
     try:
         from .tts import list_engines
         engines = list_engines()
-        print(f"TTS engines: {engines}")
+        _p(f"TTS engines: {engines}")
         results["tts"] = "edge-tts" in engines
     except Exception as e:
-        print(f"TTS engines: FAIL ({e})")
+        _p(f"TTS engines: FAIL ({e})")
         results["tts"] = False
 
     # pynput keyboard
     try:
         from pynput import keyboard  # type: ignore
-        print(f"pynput: OK ({keyboard.__name__})")
+        _p(f"pynput: OK ({keyboard.__name__})")
         results["pynput"] = True
     except ImportError as e:
-        print(f"pynput: FAIL ({e})")
+        _p(f"pynput: FAIL ({e})")
         results["pynput"] = False
 
     # sounddevice
     try:
         import sounddevice as sd  # type: ignore
-        print(f"sounddevice: OK (PortAudio {sd.get_portaudio_version()[1]})")
+        _p(f"sounddevice: OK (PortAudio {sd.get_portaudio_version()[1]})")
         results["sounddevice"] = True
     except (ImportError, OSError) as e:
-        print(f"sounddevice: FAIL ({e})")
+        _p(f"sounddevice: FAIL ({e})")
         results["sounddevice"] = False
 
     # DirectInput8 (non-fatal on CI — no joystick hardware/desktop)
@@ -368,19 +375,19 @@ def _run_self_test() -> int:
             di = DirectInput8()
             ok = di.init(hwnd=0)
             devs = di.enumerate() if ok else []
-            print(f"DirectInput8: {'OK' if ok else 'SKIP (no desktop HWND)'} "
-                  f"({len(devs)} devices)")
+            _p(f"DirectInput8: {'OK' if ok else 'SKIP (no desktop HWND)'} "
+               f"({len(devs)} devices)")
             results["dinput"] = True
         except Exception as e:
-            print(f"DirectInput8: SKIP ({e})")
+            _p(f"DirectInput8: SKIP ({e})")
             results["dinput"] = True
 
         from .ptt.input_binding import list_joysticks_winmm, _JOYCAPSW
-        print(f"winmm: sizeof(JOYCAPSW)={ctypes.sizeof(_JOYCAPSW)} "
-              f"(expected 728)")
-        results["winmm_struct"] = ctypes.sizeof(_JOYCAPSW) == 728
+        sz = ctypes.sizeof(_JOYCAPSW)
+        _p(f"winmm: sizeof(JOYCAPSW)={sz} (expected 728)")
+        results["winmm_struct"] = sz == 728
         wm = list_joysticks_winmm()
-        print(f"winmm: {len(wm)} devices")
+        _p(f"winmm: {len(wm)} devices")
     else:
         results["dinput"] = True
         results["winmm_struct"] = True
@@ -395,15 +402,15 @@ def _run_self_test() -> int:
         with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             data = _json.loads(resp.read().decode("utf-8"))
         n = len(data) if isinstance(data, list) else 1
-        print(f"GitHub API: OK ({n} releases)")
+        _p(f"GitHub API: OK ({n} releases)")
         results["updater"] = n > 0
     except Exception as e:
-        print(f"GitHub API: FAIL ({e})")
+        _p(f"GitHub API: FAIL ({e})")
         results["updater"] = False
 
     all_ok = all(results.values())
-    print(f"\nResults: {results}")
-    print(f"Overall: {'PASS' if all_ok else 'FAIL'}")
+    _p(f"Results: {results}")
+    _p(f"Overall: {'PASS' if all_ok else 'FAIL'}")
     return 0 if all_ok else 1
 
 
