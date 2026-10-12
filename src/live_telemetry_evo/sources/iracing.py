@@ -1,15 +1,18 @@
-"""iRacing telemetry source via pyirsdk.
+"""iRacing telemetry source via a read-only IRSDK client.
 
-Uses ``pyirsdk`` (lazy import, Windows-only) to read iRacing's shared memory.
-Falls back to a CSV replay mode (Garage 61 format) so the source is testable
-on Linux without a running sim.
+Live path (Windows): we open ``Local\\IRSDKMemMapFileName`` with
+``FILE_MAP_READ`` and wait on ``Local\\IRSDKDataValidEvent`` via
+``WaitForSingleObject`` (SYNCHRONIZE only). pyirsdk is used only as a
+parser on that view — we never call pyirsdk startup or freeze-latest,
+or any broadcast / telem / replay command.
+
+Replay path: Garage 61 CSV, testable without a sim.
 """
 from __future__ import annotations
 
 import csv
-import math
 import sys
-import time
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +21,9 @@ from PySide6.QtCore import QObject, QTimer
 from ..logbook import log
 from ..telemetry import CarPosition, IRacingData, TelemetryFrame, WHEEL_IDS
 from .base import TelemetrySource
+from .irsdk_readonly import (
+    ReadOnlyIRSDK, attach_pyirsdk, cap_iracing_hz, wait_timeout_ms,
+)
 
 
 def _try_import_irsdk():
@@ -93,16 +99,20 @@ def _parse_session_yaml(ir) -> dict:
 
 
 class IRacingTelemetrySource(TelemetrySource):
-    """Live iRacing telemetry source using pyirsdk shared memory."""
+    """Live iRacing telemetry: read-only shared memory, wait-for-event."""
 
-    def __init__(self, hz: int = 60, parent: QObject | None = None) -> None:
+    def __init__(self, hz: int = 60, parent: QObject | None = None,
+                 ro_client: ReadOnlyIRSDK | None = None) -> None:
         super().__init__(parent)
-        self._hz = hz
+        self._hz = cap_iracing_hz(hz)
         self._frame = TelemetryFrame()
-        self._timer: Optional[QTimer] = None
         self._ir = None
+        self._ro = ro_client if ro_client is not None else ReadOnlyIRSDK()
         self._connected = False
         self._session_info_version = -1
+        self._last_tick = -1
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         irsdk = _try_import_irsdk()
@@ -110,48 +120,82 @@ class IRacingTelemetrySource(TelemetrySource):
             log("[iracing] pyirsdk not available (non-Windows or not installed)")
             return
         self._ir = irsdk.IRSDK()
-        self._timer = QTimer(self)
-        self._timer.setInterval(int(1000 / self._hz))
-        self._timer.timeout.connect(self._tick)
-        self._timer.start()
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, name="irsdk-readonly", daemon=True)
+        self._thread.start()
+        log(f"[iracing] read-only poller started (max {self._hz} Hz, "
+            f"wait={wait_timeout_ms(self._hz)}ms; no broadcast, no .ibt)")
 
     def stop(self) -> None:
-        if self._timer:
-            self._timer.stop()
-        if self._ir and self._connected:
-            self._ir.shutdown()
-            self._connected = False
+        self._stop.set()
+        t = self._thread
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=0.5)
+        self._thread = None
+        self._ro.close()
+        self._connected = False
+        self._ir = None
 
     def set_hz(self, hz: int) -> None:
-        hz = max(1, int(hz))
-        self._hz = hz
-        if self._timer:
-            self._timer.setInterval(int(1000 / hz))
+        self._hz = cap_iracing_hz(hz)
 
-    def _tick(self) -> None:
+    def _try_connect(self) -> bool:
         if self._ir is None:
-            return
-        if not self._connected:
-            if self._ir.startup():
-                self._connected = True
-                log("[iracing] connected to iRacing shared memory")
-            else:
-                return
+            return False
+        if not self._ro.open():
+            return False
+        if not attach_pyirsdk(self._ir, self._ro.buffer()):
+            self._ro.close()
+            return False
+        self._connected = True
+        self._last_tick = -1
+        self._session_info_version = -1
+        log("[iracing] connected (FILE_MAP_READ, no CreateFileMapping, "
+            "no freeze_var_buffer_latest)")
+        return True
 
-        if not self._ir.is_connected:
-            self._connected = False
-            return
+    def _disconnect(self) -> None:
+        self._connected = False
+        self._ro.close()
+        if self._ir is not None:
+            self._ir._shared_mem = None
+            self._ir._header = None
+            self._ir.is_initialized = False
 
-        self._ir.freeze_var_buffer_latest()
-
-        if self._ir._header.session_info_update != self._session_info_version:
-            self._session_info_version = self._ir._header.session_info_update
-            self._parse_session()
-
-        self._read_telemetry()
-        self.frame.emit(self._frame)
-        if self._bus is not None:
-            self._bus.publish(self._frame)
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            timeout = wait_timeout_ms(self._hz)
+            if not self._connected:
+                if not self._try_connect():
+                    self._stop.wait(0.2)
+                    continue
+            if not self._ro.is_connected():
+                self._disconnect()
+                self._stop.wait(0.2)
+                continue
+            self._ro.wait(timeout)
+            if self._stop.is_set():
+                break
+            if not self._ro.is_connected():
+                self._disconnect()
+                continue
+            tick = self._ro.tick_count()
+            if tick == self._last_tick:
+                continue
+            self._last_tick = tick
+            try:
+                header = getattr(self._ir, "_header", None)
+                if header is not None:
+                    ver = header.session_info_update
+                    if ver != self._session_info_version:
+                        self._session_info_version = ver
+                        self._parse_session()
+                self._read_telemetry()
+                if self._bus is not None:
+                    self._bus.publish(self._frame)
+            except Exception as e:
+                log(f"[iracing] read error: {e}")
 
     def _parse_session(self) -> None:
         info = _parse_session_yaml(self._ir)

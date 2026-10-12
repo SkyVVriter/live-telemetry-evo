@@ -295,7 +295,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help=("telemetry source: 'auto' (default, detect the running game), "
               "'ac-evo' (Assetto Corsa Evo), 'ac1' (original Assetto Corsa), "
               "'acc' (Assetto Corsa Competizione), 'acrally' (Assetto Corsa "
-              "Rally), 'iracing' (iRacing via pyirsdk), "
+              "Rally), 'iracing' (iRacing shared memory, read-only), "
               "'iracing-replay' (replay from Garage 61 CSV), "
               "or 'synthetic' (mock data)"),
     )

@@ -14,6 +14,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 - pygame PTT logs every assign/press/release: device index, name, button, `pressed`/`released`.
 - **PTT assign no longer freezes the GUI**: pygame init/pump/`get_button` run on one dedicated worker (no `display.set_mode`). The GUI only receives queued Qt signals. Assign times out after 20 s. A `faulthandler.dump_traceback_later` watchdog dumps all thread stacks to `session.log` if the GUI stalls for more than 3 s.
 - **Wheel polling backend** setting (`winmm` / `DirectInput` / `pygame` / `off`), default `winmm`. `--self-test` documents that haptic is not initialized.
+- **iRacing SDK is read-only and Garage 61-safe**: `Local\\IRSDKMemMapFileName` is opened with `FILE_MAP_READ` only (never `CreateFileMapping`). The data-valid event is opened with `SYNCHRONIZE` only — `WaitForSingleObject` with a timeout, never `ResetEvent`. pyirsdk `startup()` / `freeze_var_buffer_latest()` are not used (those stole the auto-reset event from other clients). No broadcast messages, no telem start/stop/restart, no `.ibt`, no `app.ini`. Live poll is capped at 60 Hz.
 
 ## [0.9.0-test.12] - 2026-10-12
 
