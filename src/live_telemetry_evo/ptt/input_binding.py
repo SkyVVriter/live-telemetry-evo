@@ -1,18 +1,20 @@
 """PTT input binding: keyboard keys and joystick/wheel buttons.
 
 Keyboard capture uses ``pynput`` (cross-platform, background-capable).
-Joystick/wheel capture uses three backends in priority order:
+Wheel/joystick polling uses exactly one backend, from the
+``wheel_backend`` setting (default ``winmm``):
 
-1. **DirectInput8** (``dinput.py``): raw ctypes COM, sees all HID game
-   controllers (Moza, Fanatec, Thrustmaster …), background-safe via
-   ``DISCL_BACKGROUND | DISCL_NONEXCLUSIVE``, supports 128 buttons.
-2. **pygame** (SDL2): fallback when DirectInput cannot poll (it sees
-   128 buttons on devices like the Moza R16). Used on non-Windows too.
-3. **winmm** (``joyGetPosEx``): legacy Windows Multimedia API, up to
-   16 devices × 32 buttons. Last resort for older mapper devices.
+- **winmm** (``joyGetPosEx``): read-only, cannot touch FFB. The generic
+  32-button mapper entry is typically the Moza R16. Safe default.
+- **DirectInput8**: ``DISCL_NONEXCLUSIVE | DISCL_BACKGROUND`` only,
+  128 buttons. Never exclusive, never sends effects.
+- **pygame** (SDL2): joystick-only init, HIDAPI/raw-input off. Can
+  still disturb FFB on some wheels — opt-in only.
+- **off**: keyboard PTT only.
 
-Devices are freshly enumerated each time ``list_joysticks()`` is called
-(handles hotplug).
+No automatic fallback to pygame/DirectInput: that inverted R16 FFB in
+iRacing under test.12. Devices are re-enumerated on each
+``list_joysticks()`` call (hotplug).
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ from enum import Enum
 from typing import Callable, Optional
 
 from ..logbook import log
+from .ffb_safe import DEFAULT_WHEEL_BACKEND, resolve_wheel_backend
 from .pygame_joy import FakeJoyBackend, get_pygame_worker  # noqa: F401
 
 
@@ -192,7 +195,7 @@ def _read_buttons_winmm(joy_id: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Unified joystick listing: DI8 (if pollable) -> pygame -> winmm
+# Unified joystick listing — one backend, never auto-fallback (FFB-safe)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -205,34 +208,29 @@ class JoystickInfo:
     vid_pid: str = ""
 
 
-def list_joysticks() -> list[dict]:
-    """Enumerate joysticks: DI8 if it can poll, else pygame, else winmm."""
-    result = _list_dinput()
-    if result and _dinput_can_poll(result):
-        log(f"[ptt/input] DirectInput8: {len(result)} device(s)")
+def list_joysticks(backend: str | None = None) -> list[dict]:
+    """Enumerate joysticks for one backend (default: the saved setting)."""
+    chosen = resolve_wheel_backend(backend)
+    log(f"[ptt/input] listing wheel backend={chosen}")
+    if chosen == "off":
+        log("[ptt/input] wheel polling off")
+        return []
+    if chosen == "winmm":
+        result = _list_winmm()
+    elif chosen == "dinput":
+        result = _list_dinput()
+    elif chosen == "pygame":
+        result = _list_pygame()
+    else:
+        result = []
+    if result:
+        log(f"[ptt/input] {chosen}: {len(result)} device(s)")
         for j in result:
+            extra = f", {j.get('vid_pid', '')}" if j.get("vid_pid") else ""
             log(f"[ptt/input]   [{j['index']}] {j['name']} "
-                f"({j['buttons']} btn, {j.get('vid_pid', '')})")
+                f"({j['buttons']} btn{extra})")
         return result
-    if result:
-        log(f"[ptt/input] DirectInput8 enumerated {len(result)} device(s) "
-            "but none can be polled — falling back to pygame")
-
-    result = _list_pygame()
-    if result:
-        log(f"[ptt/input] pygame: {len(result)} device(s)")
-        for j in result:
-            log(f"[ptt/input]   [{j['index']}] {j['name']} ({j['buttons']} btn)")
-        return result
-
-    result = _list_winmm()
-    if result:
-        log(f"[ptt/input] winmm: {len(result)} device(s)")
-        for j in result:
-            log(f"[ptt/input]   [{j['index']}] {j['name']} ({j['buttons']} btn)")
-        return result
-
-    log("[ptt/input] no joystick backend found devices")
+    log(f"[ptt/input] {chosen}: no devices")
     return []
 
 
@@ -280,11 +278,27 @@ def _list_pygame() -> list[dict]:
         return []
 
 
-def run_diagnostics() -> str:
-    """Run all backends and return a diagnostic report string."""
-    lines = ["=== Joystick Diagnostics ===", ""]
+def run_diagnostics(active_backend: str | None = None) -> str:
+    """Run backends and return a diagnostic report string.
 
-    lines.append("--- DirectInput8 ---")
+    pygame is started only when it is the active wheel backend so a
+    diagnostics click cannot open the wheel via HIDAPI and invert FFB.
+    DirectInput enumeration does not Acquire / open devices.
+    """
+    active = resolve_wheel_backend(active_backend)
+    lines = [
+        "=== Joystick Diagnostics ===",
+        "",
+        f"Active wheel backend: {active} (default={DEFAULT_WHEEL_BACKEND})",
+        "FFB policy: winmm is read-only (cannot touch FFB).",
+        "DirectInput uses DISCL_NONEXCLUSIVE|DISCL_BACKGROUND only;",
+        "never exclusive, never effects / autocenter / DIPROP_FFGAIN.",
+        "pygame inits joystick only (no haptic; HIDAPI=0, RAWINPUT=0)",
+        "and is not started unless backend=pygame.",
+        "",
+    ]
+
+    lines.append("--- DirectInput8 (enumerate only, no Acquire) ---")
     try:
         from .dinput import list_devices_dinput
         devs = list_devices_dinput()
@@ -299,27 +313,37 @@ def run_diagnostics() -> str:
         lines.append(f"  ERROR: {e}")
 
     lines.append("")
-    lines.append("--- winmm (joyGetDevCapsW) ---")
+    lines.append("--- winmm (joyGetDevCapsW, read-only) ---")
     joys = list_joysticks_winmm()
     if joys:
         for j in joys:
-            lines.append(f"  [{j.index}] {j.name} ({j.num_buttons} buttons)")
+            note = ""
+            if j.num_buttons >= 32:
+                note = "  # likely the wheel (R16 maps here as 32 buttons)"
+            lines.append(
+                f"  [{j.index}] {j.name} ({j.num_buttons} buttons){note}")
     else:
         lines.append("  (no devices)")
 
     lines.append("")
     lines.append("--- pygame (SDL2) ---")
-    try:
-        worker = get_pygame_worker()
-        worker.ensure_started()
-        devs = worker.cached_devices()
-        if devs:
-            for d in devs:
-                lines.append(f"  [{d['index']}] {d['name']} ({d['buttons']} btn)")
-        else:
-            lines.append("  (worker running; no snapshot yet)")
-    except (ImportError, Exception) as e:
-        lines.append(f"  ERROR: {e}")
+    if active != "pygame":
+        lines.append(
+            "  (not started — FFB-safe; select Wheel polling backend "
+            "= pygame to probe)")
+    else:
+        try:
+            worker = get_pygame_worker()
+            worker.ensure_started()
+            devs = worker.cached_devices()
+            if devs:
+                for d in devs:
+                    lines.append(
+                        f"  [{d['index']}] {d['name']} ({d['buttons']} btn)")
+            else:
+                lines.append("  (worker running; no snapshot yet)")
+        except (ImportError, Exception) as e:
+            lines.append(f"  ERROR: {e}")
 
     lines.append("")
     return "\n".join(lines)
@@ -341,7 +365,7 @@ class InputListener:
     than ``_STOP_JOIN_S`` so the GUI thread cannot freeze.
     """
 
-    def __init__(self, joy_backend=None) -> None:
+    def __init__(self, joy_backend=None, wheel_backend=None) -> None:
         self._binding: Optional[PTTBinding] = None
         self._on_press: Optional[Callable[[], None]] = None
         self._on_release: Optional[Callable[[], None]] = None
@@ -351,6 +375,7 @@ class InputListener:
         self._stop = threading.Event()
         self._pressed = False
         self._joy_backend = joy_backend
+        self._wheel_backend = resolve_wheel_backend(wheel_backend)
         self._assign_timer: Optional[threading.Timer] = None
         self._subscribed_pygame = False
 
@@ -498,31 +523,33 @@ class InputListener:
         if self._joy_backend is not None:
             self._pygame_poll_loop()
             return
-        joys = list_joysticks()
-        if not joys:
+        backend = self._wheel_backend
+        log(f"[ptt/input] poll wheel backend={backend}")
+        if backend == "off":
             return
-
-        backend = joys[0].get("backend")
-        if backend == "dinput8":
+        if backend == "winmm":
+            self._winmm_poll_loop(list_joysticks(backend="winmm"))
+            return
+        if backend == "dinput":
+            joys = list_joysticks(backend="dinput")
             dinput_devs = [j.get("_dinput_dev") for j in joys
-                           if j.get("backend") == "dinput8"]
+                           if j.get("_dinput_dev") is not None]
             opened = False
             try:
                 from .dinput import dinput_any_open
-                real = [d for d in dinput_devs if d is not None]
-                opened = bool(real) and dinput_any_open(real)
+                opened = bool(dinput_devs) and dinput_any_open(dinput_devs)
             except (ImportError, OSError) as e:
                 log(f"[ptt/input] DirectInput8 unavailable for poll: {e}")
             if opened:
                 self._dinput_poll_loop(joys, dinput_devs)
                 return
-            log("[ptt/input] DirectInput8 poll failed — falling back to pygame")
+            log("[ptt/input] DirectInput8 not pollable — "
+                "not falling back (FFB-safe)")
+            return
+        if backend == "pygame":
             self._pygame_poll_loop()
             return
-        if backend == "winmm":
-            self._winmm_poll_loop(joys)
-            return
-        self._pygame_poll_loop()
+        log(f"[ptt/input] unknown wheel backend {backend!r}")
 
     def _dinput_poll_loop(self, joys, dinput_devs):
         from .dinput import read_device_buttons

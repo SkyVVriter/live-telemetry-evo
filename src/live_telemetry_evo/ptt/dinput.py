@@ -3,8 +3,9 @@
 Enumerates all game controllers visible to DirectInput8 — including
 modern HID-based devices (Moza, Fanatec, Thrustmaster) that the legacy
 winmm API misses. Reads up to 128 buttons per device. Operates in
-background mode (``DISCL_BACKGROUND | DISCL_NONEXCLUSIVE``) so buttons
-are readable while iRacing or another game has focus.
+background mode (``DISCL_NONEXCLUSIVE | DISCL_BACKGROUND`` only) so
+buttons are readable while iRacing has focus. Never exclusive, never
+sends/stops/resets effects or sets autocenter / FFB gain.
 
 No external dependencies — uses only ``ctypes``, ``comtypes`` is not
 required. The COM vtable is accessed via raw pointer arithmetic.
@@ -25,6 +26,13 @@ from .dinput_format import (
     _DIJOYSTATE2,
     c_dfDIJoystick2,
     format_header_summary,
+)
+from .ffb_safe import (
+    DISCL_BACKGROUND,
+    DISCL_EXCLUSIVE,
+    DISCL_FOREGROUND,
+    DISCL_NONEXCLUSIVE,
+    cooperative_level_flags,
 )
 
 if sys.platform != "win32":
@@ -174,8 +182,10 @@ IID_IDirectInput8W = _make_guid(
 _DIRECTINPUT_VERSION = 0x0800
 _DI8DEVCLASS_GAMECTRL = 4
 _DIEDFL_ATTACHEDONLY = 0x00000001
-_DISCL_BACKGROUND = 0x00000008
-_DISCL_NONEXCLUSIVE = 0x00000002
+_DISCL_BACKGROUND = DISCL_BACKGROUND
+_DISCL_NONEXCLUSIVE = DISCL_NONEXCLUSIVE
+_DISCL_EXCLUSIVE = DISCL_EXCLUSIVE
+_DISCL_FOREGROUND = DISCL_FOREGROUND
 _ERROR_LOG_INTERVAL_S = 10.0
 
 # IDirectInput8W / IDirectInputDevice8W vtable (IUnknown at 0..2).
@@ -455,7 +465,11 @@ class DirectInput8:
             ctypes.c_long, ctypes.c_void_p,
             ctypes.c_void_p, ctypes.wintypes.DWORD)
         set_cl = SET_CL(dev_vt[VT_DEV_SETCOOPERATIVELEVEL])
-        flags = _DISCL_BACKGROUND | _DISCL_NONEXCLUSIVE
+        # FFB-safe: NONEXCLUSIVE|BACKGROUND only. Never exclusive.
+        flags = cooperative_level_flags()
+        log(f"[dinput] SetCooperativeLevel flags=0x{flags:08X} "
+            f"(DISCL_NONEXCLUSIVE|DISCL_BACKGROUND; "
+            f"exclusive={bool(flags & DISCL_EXCLUSIVE)})")
         hr = set_cl(device_ptr, self._hwnd, flags)
         if hr != 0:
             self._fail_open(

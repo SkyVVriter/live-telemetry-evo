@@ -115,6 +115,7 @@ def build_report() -> str:
         ptt = load_ptt_settings()
         lines.append(f"  STT engine: {ptt['stt_engine']}")
         lines.append(f"  STT key:    {_mask_secret(ptt.get('whisper_api_key', ''))}")
+        lines.append(f"  Wheel backend: {ptt.get('wheel_backend', 'winmm')}")
         data = _read()
         el = data.get("elevenlabs", {})
         if isinstance(el, dict):

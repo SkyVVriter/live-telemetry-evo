@@ -8,10 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - **DirectInput SetDataFormat 0x80070057 (E_INVALIDARG)**: `SetDataFormat` was invoked at vtable index 10 (`GetDeviceData`) instead of 11, and `Poll` at 8 (`Unacquire`) instead of 25. The `DIDATAFORMAT` / `DIOBJECTDATAFORMAT` layout is now locked to the Windows SDK x64 sizes (`dwSize=32`, `dwObjSize=24`, pointer-aligned `rgodf` at offset 24), `dwFlags=DIDF_ABSAXIS`, live `pguid` pointers, `DIDFT_OPTIONAL|DIDFT_ANYINSTANCE` on every object, and `dwOfs < dwDataSize`. Object table matches Wine/SDK `c_dfDIJoystick2` (164 entries).
+- **Moza R16 FFB inverted while the overlay is running**: pygame/SDL HIDAPI (and exclusive-style device open) was opening the wheel and sending reports. Wheel polling now never touches FFB: DirectInput uses `DISCL_NONEXCLUSIVE|DISCL_BACKGROUND` only (never exclusive, never effects / autocenter / `DIPROP_FFGAIN`); pygame inits the joystick subsystem only, with `SDL_HINT_JOYSTICK_HIDAPI=0`, `SDL_JOYSTICK_HIDAPI=0`, per-device HIDAPI hints off, and `SDL_HINT_JOYSTICK_RAWINPUT=0`. Default backend is read-only **winmm** (the generic 32-button mapper entry is the R16). No automatic fallback to pygame.
 
 ### Added
 - pygame PTT logs every assign/press/release: device index, name, button, `pressed`/`released`.
 - **PTT assign no longer freezes the GUI**: pygame init/pump/`get_button` run on one dedicated worker (no `display.set_mode`). The GUI only receives queued Qt signals. Assign times out after 20 s. A `faulthandler.dump_traceback_later` watchdog dumps all thread stacks to `session.log` if the GUI stalls for more than 3 s.
+- **Wheel polling backend** setting (`winmm` / `DirectInput` / `pygame` / `off`), default `winmm`. `--self-test` documents that haptic is not initialized.
 
 ## [0.9.0-test.12] - 2026-10-12
 

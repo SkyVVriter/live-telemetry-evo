@@ -7,6 +7,10 @@ non-blocking, e.g. a queued Qt signal).
 
 No ``pygame.display.set_mode``: creating an SDL window while Qt owns the
 Win32 message loop freezes the app.
+
+FFB-safe: only ``pygame.joystick.init`` (never the full pygame init or
+haptic). HIDAPI / raw-input / WGI hints are forced off so SDL does not
+open a Moza wheel and send reports that invert iRacing FFB.
 """
 from __future__ import annotations
 
@@ -15,6 +19,9 @@ import threading
 from typing import Callable, Optional
 
 from ..logbook import log
+from .ffb_safe import apply_sdl_ffb_safe_hints
+
+apply_sdl_ffb_safe_hints()
 
 JoyEdgeCB = Callable[[int, str, int, bool], None]
 
@@ -58,14 +65,27 @@ class PygameJoyWorker:
         self._stop.set()
 
     def _run(self) -> None:
+        apply_sdl_ffb_safe_hints()
         os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
         try:
             import pygame
+            # Joystick only. Full pygame init would start haptic and invert FFB.
             pygame.joystick.init()
         except (ImportError, Exception) as e:
             log(f"[ptt/pygame] init failed: {e}")
             return
-        log("[ptt/pygame] worker started (no display, joystick only)")
+        haptic_on = False
+        try:
+            haptic = getattr(pygame, "haptic", None)
+            if haptic is not None and hasattr(haptic, "get_init"):
+                haptic_on = bool(haptic.get_init())
+                if haptic_on and hasattr(haptic, "quit"):
+                    haptic.quit()
+                    haptic_on = bool(haptic.get_init())
+        except Exception:
+            haptic_on = False
+        log("[ptt/pygame] worker started (joystick only, no display, "
+            f"haptic={'on' if haptic_on else 'off'}, HIDAPI=0, RAWINPUT=0)")
         sticks: list = []
         prev: dict[tuple[int, int], bool] = {}
         try:

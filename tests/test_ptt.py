@@ -2,6 +2,7 @@
 
 All tests run headless — sounddevice, pynput, and pygame are mocked.
 """
+import os
 import struct
 import sys
 import threading
@@ -508,6 +509,7 @@ class TestPTTSettings:
             assert cfg["device_index"] == 2
             assert cfg["stt_engine"] == "faster-whisper"
             assert cfg["binding"]["key_name"] == "f5"
+            assert cfg["wheel_backend"] == "winmm"
         finally:
             settings._positions_path = orig
 
@@ -644,6 +646,7 @@ class TestPTTSettingsDevicePersistence:
             cfg = settings.load_ptt_settings()
             assert cfg["device_name"] == ""
             assert cfg["device_hostapi"] == ""
+            assert cfg["wheel_backend"] == "winmm"
         finally:
             settings._positions_path = orig
 
@@ -914,18 +917,39 @@ class TestDIJoystick2DataFormat:
 class TestPygamePTTBackend:
     """PTT listing/capture must work when DirectInput cannot poll."""
 
-    def test_list_joysticks_falls_back_to_pygame(self):
+    def test_list_joysticks_default_is_winmm_no_pygame_fallback(self):
         from live_telemetry_evo.ptt import input_binding as mod
-        di = [{"index": 0, "name": "MOZA R16 Ultra Base", "buttons": 128,
-               "backend": "dinput8", "vid_pid": "346E:0000",
-               "_dinput_dev": object()}]
+        winmm = [{"index": 0, "name": "Generic USB Joystick", "buttons": 32,
+                  "backend": "winmm"}]
         pg = [{"index": 0, "name": "MOZA R16 Ultra Base", "buttons": 128,
                "backend": "pygame"}]
-        with patch.object(mod, "_list_dinput", return_value=di), \
-             patch.object(mod, "_dinput_can_poll", return_value=False), \
-             patch.object(mod, "_list_pygame", return_value=pg), \
-             patch.object(mod, "_list_winmm", return_value=[]):
+        with patch.object(mod, "_list_dinput", return_value=[]), \
+             patch.object(mod, "_list_pygame", return_value=pg) as pg_list, \
+             patch.object(mod, "_list_winmm", return_value=winmm), \
+             patch.object(mod, "resolve_wheel_backend", return_value="winmm"):
             result = list_joysticks()
+        assert result[0]["backend"] == "winmm"
+        assert result[0]["buttons"] == 32
+        pg_list.assert_not_called()
+
+    def test_list_joysticks_backend_off_is_empty(self):
+        from live_telemetry_evo.ptt import input_binding as mod
+        with patch.object(mod, "_list_pygame") as pg_list, \
+             patch.object(mod, "_list_dinput") as di_list, \
+             patch.object(mod, "_list_winmm") as wm_list:
+            result = list_joysticks(backend="off")
+        assert result == []
+        pg_list.assert_not_called()
+        di_list.assert_not_called()
+        wm_list.assert_not_called()
+
+    def test_list_joysticks_explicit_pygame(self):
+        from live_telemetry_evo.ptt import input_binding as mod
+        pg = [{"index": 0, "name": "MOZA R16 Ultra Base", "buttons": 128,
+               "backend": "pygame"}]
+        with patch.object(mod, "_list_pygame", return_value=pg), \
+             patch.object(mod, "_list_winmm", return_value=[]):
+            result = list_joysticks(backend="pygame")
         assert result[0]["backend"] == "pygame"
         assert result[0]["buttons"] == 128
 
@@ -1098,12 +1122,15 @@ class TestDInputBackend:
 
 class TestDiagnostics:
     def test_run_diagnostics_returns_string(self):
-        report = run_diagnostics()
+        report = run_diagnostics(active_backend="winmm")
         assert isinstance(report, str)
         assert "Joystick Diagnostics" in report
         assert "DirectInput8" in report
         assert "winmm" in report
         assert "pygame" in report
+        assert "FFB policy" in report
+        assert "not started" in report
+        assert "HIDAPI=0" in report
 
     def test_list_joysticks_returns_backend_field(self):
         """list_joysticks() entries include a 'backend' field."""
@@ -1111,10 +1138,117 @@ class TestDiagnostics:
         mock_result = [{"index": 0, "name": "MockWheel", "buttons": 16,
                         "backend": "dinput8", "vid_pid": "1234:5678"}]
         with patch.object(mod, '_list_dinput', return_value=mock_result):
-            result = list_joysticks()
+            result = list_joysticks(backend="dinput")
             assert len(result) == 1
             assert result[0]["backend"] == "dinput8"
             assert result[0]["name"] == "MockWheel"
+
+
+class TestFFBSafePolling:
+    """Wheel polling must never touch force feedback."""
+
+    def test_default_backend_is_winmm(self):
+        from live_telemetry_evo.ptt.ffb_safe import (
+            DEFAULT_WHEEL_BACKEND, normalize_wheel_backend,
+        )
+        assert DEFAULT_WHEEL_BACKEND == "winmm"
+        assert normalize_wheel_backend(None) == "winmm"
+        assert normalize_wheel_backend("DirectInput") == "dinput"
+        assert normalize_wheel_backend("dinput8") == "dinput"
+        assert normalize_wheel_backend("bogus") == "winmm"
+
+    def test_cooperative_level_never_exclusive(self):
+        from live_telemetry_evo.ptt.ffb_safe import (
+            DISCL_BACKGROUND, DISCL_EXCLUSIVE, DISCL_FOREGROUND,
+            DISCL_NONEXCLUSIVE, DISCL_SAFE, cooperative_level_flags,
+        )
+        flags = cooperative_level_flags()
+        assert flags == DISCL_SAFE
+        assert flags == (DISCL_NONEXCLUSIVE | DISCL_BACKGROUND)
+        assert not (flags & DISCL_EXCLUSIVE)
+        assert not (flags & DISCL_FOREGROUND)
+
+    def test_sdl_hints_disable_hidapi_and_rawinput(self):
+        from live_telemetry_evo.ptt.ffb_safe import (
+            SDL_FFB_SAFE_HINTS, apply_sdl_ffb_safe_hints,
+        )
+        apply_sdl_ffb_safe_hints()
+        assert SDL_FFB_SAFE_HINTS["SDL_HINT_JOYSTICK_HIDAPI"] == "0"
+        assert SDL_FFB_SAFE_HINTS["SDL_JOYSTICK_HIDAPI"] == "0"
+        assert SDL_FFB_SAFE_HINTS["SDL_HINT_JOYSTICK_RAWINPUT"] == "0"
+        assert os.environ["SDL_HINT_JOYSTICK_HIDAPI"] == "0"
+        assert os.environ["SDL_JOYSTICK_HIDAPI"] == "0"
+        assert os.environ["SDL_HINT_JOYSTICK_RAWINPUT"] == "0"
+        assert os.environ["SDL_JOYSTICK_RAWINPUT"] == "0"
+        assert SDL_FFB_SAFE_HINTS["SDL_HINT_JOYSTICK_HIDAPI_XBOX"] == "0"
+
+    def test_dinput_source_never_sends_effects(self):
+        src = (Path(__file__).parent.parent / "src" / "live_telemetry_evo"
+               / "ptt" / "dinput.py")
+        text = src.read_text(encoding="utf-8")
+        assert "cooperative_level_flags()" in text
+        assert "DISCL_NONEXCLUSIVE" in text
+        assert "DISCL_BACKGROUND" in text
+        assert "CreateEffect" not in text
+        assert "SendForceFeedbackCommand" not in text
+        assert "DIPROP_FFGAIN" not in text
+        assert "DIPROP_AUTOCENTER" not in text
+        assert "SetProperty" not in text
+        assert "DISCL_EXCLUSIVE |" not in text
+        assert "| DISCL_EXCLUSIVE" not in text
+        assert "dev_vt[VT_DEV_SETPROPERTY]" not in text
+
+    def test_pygame_source_never_inits_haptic(self):
+        src = (Path(__file__).parent.parent / "src" / "live_telemetry_evo"
+               / "ptt" / "pygame_joy.py")
+        text = src.read_text(encoding="utf-8")
+        assert "apply_sdl_ffb_safe_hints" in text
+        assert "pygame.joystick.init()" in text
+        assert "pygame.init(" not in text
+        assert "haptic.init(" not in text
+        assert "display.set_mode(" not in text
+
+    def test_self_test_documents_no_haptic(self):
+        src = (Path(__file__).parent.parent / "src" / "live_telemetry_evo"
+               / "app.py")
+        text = src.read_text(encoding="utf-8")
+        assert "no haptic init" in text
+        assert "pygame_no_haptic" in text
+        assert "dinput_ffb_safe" in text
+        assert "apply_sdl_ffb_safe_hints" in text
+
+    def test_settings_dialog_does_not_start_pygame_by_default(self):
+        src = (Path(__file__).parent.parent / "src" / "live_telemetry_evo"
+               / "ptt" / "settings_dialog.py")
+        text = src.read_text(encoding="utf-8")
+        assert "_maybe_start_pygame" in text
+        assert "Wheel polling backend" in text
+        # Opening the dialog must not unconditionally start pygame.
+        assert "get_pygame_worker().ensure_started()" not in text.split(
+            "def _maybe_start_pygame")[0]
+
+    def test_wheel_backend_round_trip(self, tmp_path):
+        from live_telemetry_evo import settings
+        orig = settings._positions_path
+        settings._positions_path = lambda: tmp_path / "s.json"
+        try:
+            settings.save_ptt_settings(wheel_backend="dinput")
+            cfg = settings.load_ptt_settings()
+            assert cfg["wheel_backend"] == "dinput"
+        finally:
+            settings._positions_path = orig
+
+    def test_off_backend_does_not_start_pygame_worker(self):
+        from live_telemetry_evo.ptt import input_binding as mod
+        with patch.object(mod, "get_pygame_worker") as gw, \
+             patch.object(mod, "_list_winmm", return_value=[]), \
+             patch.object(mod, "_list_dinput", return_value=[]), \
+             patch.object(mod, "_list_pygame", return_value=[]):
+            listener = InputListener(wheel_backend="off")
+            listener.start_assign(lambda _b: None, timeout_s=1)
+            time.sleep(0.05)
+            listener.stop()
+        gw.assert_not_called()
 
 
 import ctypes

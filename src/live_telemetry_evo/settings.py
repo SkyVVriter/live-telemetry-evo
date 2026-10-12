@@ -352,6 +352,7 @@ def load_ptt_settings() -> dict:
         "whisper_api_key": str(ptt.get("whisper_api_key", "")),
         "whisper_model_size": str(ptt.get("whisper_model_size", "base")),
         "binding": binding,
+        "wheel_backend": str(ptt.get("wheel_backend", "winmm") or "winmm"),
     }
 
 

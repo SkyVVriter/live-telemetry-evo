@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from ..logbook import log
 from ..settings import load_ptt_settings, save_ptt_settings
+from .ffb_safe import normalize_wheel_backend
 from .input_binding import (
     ASSIGN_TIMEOUT_S, PTTBinding, list_joysticks, run_diagnostics,
 )
@@ -148,6 +149,26 @@ class PTTSettingsDialog(QDialog):
         self._bind_label.setStyleSheet("color: #f0f6fc; font-weight: bold;")
         bind_layout.addRow("Текущая:", self._bind_label)
 
+        self._backend_combo = QComboBox()
+        self._backend_combo.addItem("winmm (безопасно, только чтение)", "winmm")
+        self._backend_combo.addItem("DirectInput", "dinput")
+        self._backend_combo.addItem("pygame", "pygame")
+        self._backend_combo.addItem("выкл", "off")
+        saved_backend = normalize_wheel_backend(cfg.get("wheel_backend"))
+        idx = self._backend_combo.findData(saved_backend)
+        if idx >= 0:
+            self._backend_combo.setCurrentIndex(idx)
+        self._backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        bind_layout.addRow("Опрос руля (Wheel polling backend):",
+                           self._backend_combo)
+        backend_hint = QLabel(
+            "winmm не трогает FFB (32 кнопки — обычно R16). "
+            "DirectInput / pygame могут инвертировать отдачу в iRacing."
+        )
+        backend_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
+        backend_hint.setWordWrap(True)
+        bind_layout.addRow("", backend_hint)
+
         bind_btn_layout = QHBoxLayout()
         self._assign_btn = QPushButton("Назначить...")
         self._assign_btn.clicked.connect(self._on_assign)
@@ -267,10 +288,7 @@ class PTTSettingsDialog(QDialog):
         self._assign_timeout.setSingleShot(True)
         self._assign_timeout.setInterval(int(ASSIGN_TIMEOUT_S * 1000))
         self._assign_timeout.timeout.connect(self._on_assign_timeout)
-        try:
-            get_pygame_worker().ensure_started()
-        except Exception:
-            pass
+        self._maybe_start_pygame()
         QTimer.singleShot(300, self._refresh_joystick_info)
 
     def _on_test_toggle(self, checked: bool) -> None:
@@ -316,8 +334,24 @@ class PTTSettingsDialog(QDialog):
         cfg = load_ptt_settings()
         self._populate_device_combo(cfg)
 
+    def _wheel_backend(self) -> str:
+        return normalize_wheel_backend(self._backend_combo.currentData())
+
+    def _on_backend_changed(self) -> None:
+        self._maybe_start_pygame()
+        self._refresh_joystick_info()
+
+    def _maybe_start_pygame(self) -> None:
+        if self._wheel_backend() != "pygame":
+            return
+        try:
+            get_pygame_worker().ensure_started()
+        except Exception:
+            pass
+        QTimer.singleShot(300, self._refresh_joystick_info)
+
     def _on_diagnostics(self) -> None:
-        report = run_diagnostics()
+        report = run_diagnostics(active_backend=self._wheel_backend())
         self._diag_text.setPlainText(report)
         self._diag_text.setVisible(True)
         log(f"[ptt/dialog] device diagnostics:\n{report}")
@@ -338,12 +372,17 @@ class PTTSettingsDialog(QDialog):
             self._stt_key_hint.setText("")
 
     def _refresh_joystick_info(self) -> None:
-        joys = list_joysticks()
+        joys = list_joysticks(backend=self._wheel_backend())
         if joys:
-            lines = [f"{j['name']} ({j['buttons']} кн.)" for j in joys]
+            lines = [f"{j['name']} ({j['buttons']} кн.) [{j.get('backend', '')}]"
+                     for j in joys]
             self._joy_label.setText("\n".join(lines))
         else:
-            self._joy_label.setText("не обнаружены")
+            backend = self._wheel_backend()
+            if backend == "off":
+                self._joy_label.setText("опрос выключен")
+            else:
+                self._joy_label.setText(f"не обнаружены ({backend})")
 
     def _on_assign(self) -> None:
         if self._assigning:
@@ -356,7 +395,8 @@ class PTTSettingsDialog(QDialog):
         self._cancel_assign_btn.setVisible(True)
 
         from .input_binding import InputListener
-        self._assign_listener = InputListener()
+        self._assign_listener = InputListener(
+            wheel_backend=self._wheel_backend())
         self._assign_listener.start_assign(self._on_binding_captured_thread)
         self._assign_timeout.start()
 
@@ -434,6 +474,7 @@ class PTTSettingsDialog(QDialog):
             stt_engine=self._stt_combo.currentText(),
             whisper_api_key=self._api_key_input.text().strip(),
             binding=self._binding_data,
+            wheel_backend=self._wheel_backend(),
         )
         self.accept()
 

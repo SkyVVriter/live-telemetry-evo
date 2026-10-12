@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import time
@@ -393,18 +394,48 @@ def _run_self_test() -> int:
         _p(f"pynput: FAIL ({e})")
         results["pynput"] = False
 
-    # pygame importable (bundled in the frozen exe)
+    # pygame importable (bundled in the frozen exe). FFB-safe: hints first,
+    # never pygame.init() / haptic.init().
+    try:
+        from .ptt.ffb_safe import apply_sdl_ffb_safe_hints, SDL_FFB_SAFE_HINTS
+        apply_sdl_ffb_safe_hints()
+        hidapi = os.environ.get("SDL_JOYSTICK_HIDAPI", "")
+        rawin = os.environ.get("SDL_HINT_JOYSTICK_RAWINPUT", "")
+        hints_ok = (
+            hidapi == "0"
+            and rawin == "0"
+            and SDL_FFB_SAFE_HINTS.get("SDL_HINT_JOYSTICK_HIDAPI") == "0"
+        )
+        _p(f"pygame FFB-safe hints: HIDAPI={hidapi} RAWINPUT={rawin} "
+           f"(no haptic init)")
+        results["pygame_ffb_hints"] = hints_ok
+    except Exception as e:
+        _p(f"pygame FFB-safe hints: FAIL ({e})")
+        results["pygame_ffb_hints"] = False
+
     try:
         import pygame  # type: ignore
         _p(f"pygame: OK ({getattr(pygame, '__version__', '?')})")
         results["pygame"] = True
+        haptic_on = False
+        try:
+            haptic = getattr(pygame, "haptic", None)
+            if haptic is not None and hasattr(haptic, "get_init"):
+                haptic_on = bool(haptic.get_init())
+        except Exception:
+            haptic_on = False
+        _p(f"pygame haptic: "
+           f"{'FAIL initialized' if haptic_on else 'not initialized (FFB-safe)'}")
+        results["pygame_no_haptic"] = not haptic_on
     except ImportError as e:
         if sys.platform == "win32":
             _p(f"pygame: FAIL ({e})")
             results["pygame"] = False
+            results["pygame_no_haptic"] = False
         else:
             _p(f"pygame: SKIP ({e})")
             results["pygame"] = True
+            results["pygame_no_haptic"] = True
 
     # sounddevice + PortAudio loadable
     try:
@@ -461,6 +492,25 @@ def _run_self_test() -> int:
         results["winmm_structs"] = True
         results["winmm_load"] = True
         results["dinput_init"] = True
+
+    # DirectInput cooperative level is FFB-safe on every platform (constants).
+    try:
+        from .ptt.ffb_safe import (
+            DISCL_EXCLUSIVE, DISCL_FOREGROUND, DISCL_SAFE,
+            cooperative_level_flags,
+        )
+        flags = cooperative_level_flags()
+        ffb_ok = (
+            flags == DISCL_SAFE
+            and not (flags & DISCL_EXCLUSIVE)
+            and not (flags & DISCL_FOREGROUND)
+        )
+        _p(f"DirectInput cooperative: 0x{flags:X} "
+           f"NONEXCLUSIVE|BACKGROUND (never exclusive)")
+        results["dinput_ffb_safe"] = ffb_ok
+    except Exception as e:
+        _p(f"DirectInput FFB-safe flags: FAIL ({e})")
+        results["dinput_ffb_safe"] = False
 
     # GitHub API reachable
     try:
@@ -1260,7 +1310,9 @@ def run(argv: list[str] | None = None) -> int:
         controller.start()
         nonlocal _ptt_controller
         _ptt_controller = controller
-        log(f"[overlay] PTT started (mode={cfg['mode']}, binding={binding.display_name})")
+        log(f"[overlay] PTT started (mode={cfg['mode']}, "
+            f"binding={binding.display_name}, "
+            f"wheel={cfg.get('wheel_backend', 'winmm')})")
 
     def _shutdown_race_engineer() -> None:
         if _ptt_controller is not None:

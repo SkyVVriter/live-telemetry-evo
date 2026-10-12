@@ -85,6 +85,8 @@ def _play_winsound(path: Path) -> None:
 
 
 def _play_pygame(path: Path) -> None:
+    from ..ptt.ffb_safe import apply_sdl_ffb_safe_hints
+    apply_sdl_ffb_safe_hints()
     import pygame
     if pygame.mixer.get_init() is None:
         pygame.mixer.init()
