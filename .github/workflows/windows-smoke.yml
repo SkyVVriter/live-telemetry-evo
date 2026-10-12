@@ -91,7 +91,13 @@ jobs:
             -PassThru
           Start-Sleep -Seconds 10
           Take-SmokeScreenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' '01-overlay.png')
-          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          # Tree-kill: PyInstaller oneFile spawns a child Python process
+          # that owns the overlay window. Stop-Process only kills the
+          # bootloader, orphaning the child (which keeps the window alive).
+          taskkill /T /F /PID $proc.Id 2>$null
+          Start-Sleep -Seconds 3
+          # Belt-and-suspenders: kill anything with the exe name still alive
+          Get-Process | Where-Object { $_.Path -like '*LiveTelemetryEvo*' } | Stop-Process -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
 
       # ---- Phase 1b: Overlay hidden (toggle off) ----
@@ -99,9 +105,13 @@ jobs:
         shell: pwsh
         run: |
           . $env:GITHUB_WORKSPACE\Take-SmokeScreenshot.ps1
-          # Kill any lingering LiveTelemetryEvo processes from the previous step
-          Get-Process -Name 'LiveTelemetryEvo-*' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 3
+          # Verify no overlay process is left from previous step
+          $leftover = Get-Process | Where-Object { $_.Path -like '*LiveTelemetryEvo*' }
+          if ($leftover) {
+            Write-Host "WARNING: leftover overlay process found, killing"
+            $leftover | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+          }
           $csv = Join-Path $env:GITHUB_WORKSPACE 'tests\fixtures\sample_replay.csv'
           $dataDir = Join-Path $env:GITHUB_WORKSPACE 'smoke-logs\run-hidden'
           New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
@@ -109,7 +119,7 @@ jobs:
           $proc = Start-Process -FilePath $env:SMOKE_EXE `
             -ArgumentList "--source","iracing-replay","--replay-csv",$csv,"--novr","--overlay-hidden" `
             -PassThru
-          Start-Sleep -Seconds 12
+          Start-Sleep -Seconds 15
           Take-SmokeScreenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' '01b-overlay-hidden.png')
           # Dump the session log before killing for diagnostics
           $logFile = Join-Path $dataDir 'logs' 'session.log'
@@ -118,7 +128,7 @@ jobs:
             Get-Content $logFile | ForEach-Object { Write-Host $_ }
             Write-Host "--- end session.log ---"
           }
-          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          taskkill /T /F /PID $proc.Id 2>$null
           Start-Sleep -Seconds 3
 
       # ---- Phase 2: Race Worker dialog ----
@@ -135,7 +145,7 @@ jobs:
             -PassThru
           Start-Sleep -Seconds 8
           Take-SmokeScreenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' '02-dialog-race-worker.png')
-          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          taskkill /T /F /PID $proc.Id 2>$null
           Start-Sleep -Seconds 2
 
       # ---- Phase 3: TTS dialog ----
@@ -152,7 +162,7 @@ jobs:
             -PassThru
           Start-Sleep -Seconds 8
           Take-SmokeScreenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' '03-dialog-tts.png')
-          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          taskkill /T /F /PID $proc.Id 2>$null
           Start-Sleep -Seconds 2
 
       # ---- Phase 4: PTT dialog ----
@@ -169,7 +179,7 @@ jobs:
             -PassThru
           Start-Sleep -Seconds 8
           Take-SmokeScreenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' '04-dialog-ptt.png')
-          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          taskkill /T /F /PID $proc.Id 2>$null
           Start-Sleep -Seconds 2
 
       # ---- Verify screenshots differ and logs exist ----
@@ -218,7 +228,7 @@ jobs:
             # Use Python+PIL to compare pixel differences in widget areas
             python (Join-Path $env:GITHUB_WORKSPACE 'tools' 'compare_screenshots.py') $visiblePng $hiddenPng
             if ($LASTEXITCODE -ne 0) {
-              Write-Host "WARNING: Overlay screenshot pixel comparison indicates overlay may not be hidden"
+              throw "Overlay screenshot pixel comparison failed — overlay was not hidden"
             }
           } else {
             Write-Host "WARNING: missing overlay screenshot pair for diff check"
