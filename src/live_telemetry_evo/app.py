@@ -400,6 +400,8 @@ def run(argv: list[str] | None = None) -> int:
     # overlay stops rendering but the source, bus, engineer, and speech
     # scheduler keep running so no telemetry or voice data is lost.
     overlay_visible = [False if args.overlay_hidden else load_overlay_visible()]
+    if args.overlay_hidden:
+        log(f"[overlay] --overlay-hidden flag active, overlay_visible={overlay_visible[0]}")
 
     def _set_overlay_visible(visible: bool) -> None:
         overlay_visible[0] = visible
@@ -735,6 +737,7 @@ def run(argv: list[str] | None = None) -> int:
         widgets_ready[0] = True
         if not overlay_visible[0]:
             window.hide()
+            log("[overlay] overlay hidden (--overlay-hidden): window.hide() called")
             return
         if visibility.get("engine", True):
             engine.show()

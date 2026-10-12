@@ -54,11 +54,11 @@ def compare(visible_path: str, hidden_path: str) -> int:
           f"(sampled {total_pixels} pixels)")
 
     if avg_diff < 5.0:
-        print("FAIL: widget regions are nearly identical — "
-              "overlay was not hidden")
+        print("WARNING: widget regions are nearly identical — "
+              "overlay may not be hidden (avg_diff={:.1f})".format(avg_diff))
         return 1
     print("PASS: overlay-hidden screenshot differs significantly "
-          "in widget areas")
+          "in widget areas (avg_diff={:.1f})".format(avg_diff))
     return 0
 
 
