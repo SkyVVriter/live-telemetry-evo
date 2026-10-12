@@ -186,6 +186,20 @@ class TTSSettingsDialog(QDialog):
         self._pf_similarity.setSingleStep(0.05)
         self._pf_similarity.setDecimals(2)
         pf.addRow("Similarity:", self._pf_similarity)
+        self._pf_style = QDoubleSpinBox()
+        self._pf_style.setRange(0.0, 1.0)
+        self._pf_style.setSingleStep(0.05)
+        self._pf_style.setDecimals(2)
+        pf.addRow("Style:", self._pf_style)
+        self._pf_speed = QDoubleSpinBox()
+        self._pf_speed.setRange(0.5, 2.0)
+        self._pf_speed.setSingleStep(0.05)
+        self._pf_speed.setDecimals(2)
+        self._pf_speed.setValue(1.0)
+        pf.addRow("Speed:", self._pf_speed)
+        self._pf_language = QLineEdit()
+        self._pf_language.setPlaceholderText("en, ru, de, … (пусто = авто)")
+        pf.addRow("Language:", self._pf_language)
         el_layout.addLayout(pf)
 
         # Character budget
@@ -266,6 +280,9 @@ class TTSSettingsDialog(QDialog):
             self._pf_model.setCurrentIndex(idx)
         self._pf_stability.setValue(p.stability)
         self._pf_similarity.setValue(p.similarity_boost)
+        self._pf_style.setValue(p.style)
+        self._pf_speed.setValue(p.speed)
+        self._pf_language.setText(p.language)
 
     def _save_current_profile_edits(self) -> None:
         row = self._profile_list.currentRow()
@@ -281,6 +298,9 @@ class TTSSettingsDialog(QDialog):
         p.model_id = self._pf_model.currentText()
         p.stability = self._pf_stability.value()
         p.similarity_boost = self._pf_similarity.value()
+        p.style = self._pf_style.value()
+        p.speed = self._pf_speed.value()
+        p.language = self._pf_language.text().strip()
 
     def _on_add_profile(self) -> None:
         from .elevenlabs_engine import VoiceProfile

@@ -240,3 +240,138 @@ class TestElevenLabsEngine:
 
 # Need to import Priority for the budget tests
 from live_telemetry_evo.tts.base import Priority
+
+from live_telemetry_evo.tts.elevenlabs_engine import DEFAULT_PROFILES
+
+
+class TestGPProfile:
+    def test_gp_in_defaults(self):
+        names = [p.name for p in DEFAULT_PROFILES]
+        assert "GP" in names
+
+    def test_gp_voice_id(self):
+        gp = next(p for p in DEFAULT_PROFILES if p.name == "GP")
+        assert gp.voice_id == "L2sW7YcZbRyXB141p5PF"
+
+    def test_gp_model(self):
+        gp = next(p for p in DEFAULT_PROFILES if p.name == "GP")
+        assert gp.model_id == "eleven_multilingual_v2"
+
+    def test_gp_voice_settings(self):
+        gp = next(p for p in DEFAULT_PROFILES if p.name == "GP")
+        assert gp.stability == 0.8
+        assert gp.similarity_boost == 0.9
+        assert gp.style == 0.0
+        assert gp.speed == 0.9
+        assert gp.language == "en"
+
+
+class TestVoiceProfileExtendedFields:
+    def test_style_speed_language_roundtrip(self):
+        p = VoiceProfile("Test", "vid", "model", 0.5, 0.7,
+                         style=0.3, speed=0.85, language="de")
+        d = p.to_dict()
+        p2 = VoiceProfile.from_dict(d)
+        assert p2.style == 0.3
+        assert p2.speed == 0.85
+        assert p2.language == "de"
+
+    def test_defaults_for_new_fields(self):
+        p = VoiceProfile.from_dict({})
+        assert p.style == 0.0
+        assert p.speed == 1.0
+        assert p.language == ""
+
+    def test_backward_compat_missing_fields(self):
+        """Old profiles without style/speed/language load fine."""
+        d = {"name": "Old", "voice_id": "vid", "stability": 0.4,
+             "similarity_boost": 0.6}
+        p = VoiceProfile.from_dict(d)
+        assert p.style == 0.0
+        assert p.speed == 1.0
+        assert p.language == ""
+
+
+class TestCacheKeyIncludesSettings:
+    def test_different_speed_different_cache(self):
+        engine = ElevenLabsEngine()
+        p1 = VoiceProfile("A", "vid", "model", 0.5, 0.7,
+                          style=0.0, speed=1.0)
+        p2 = VoiceProfile("A", "vid", "model", 0.5, 0.7,
+                          style=0.0, speed=0.9)
+        c1 = engine._cache_path("hello", p1)
+        c2 = engine._cache_path("hello", p2)
+        assert c1 != c2
+
+    def test_different_style_different_cache(self):
+        engine = ElevenLabsEngine()
+        p1 = VoiceProfile("A", "vid", "model", 0.5, 0.7, style=0.0)
+        p2 = VoiceProfile("A", "vid", "model", 0.5, 0.7, style=0.5)
+        assert engine._cache_path("hello", p1) != engine._cache_path("hello", p2)
+
+    def test_different_language_different_cache(self):
+        engine = ElevenLabsEngine()
+        p1 = VoiceProfile("A", "vid", "model", 0.5, 0.7, language="en")
+        p2 = VoiceProfile("A", "vid", "model", 0.5, 0.7, language="ru")
+        assert engine._cache_path("hello", p1) != engine._cache_path("hello", p2)
+
+    def test_same_settings_same_cache(self):
+        engine = ElevenLabsEngine()
+        p = VoiceProfile("A", "vid", "model", 0.5, 0.7,
+                         style=0.1, speed=0.9, language="en")
+        assert engine._cache_path("hello", p) == engine._cache_path("hello", p)
+
+
+class TestSynthesizePayload:
+    def test_payload_includes_voice_settings(self):
+        """_synthesize_api must include style and speed in voice_settings."""
+        engine = ElevenLabsEngine()
+        engine._api_key = "test-key"
+        profile = VoiceProfile("GP", "vid123", "model",
+                               stability=0.8, similarity_boost=0.9,
+                               style=0.0, speed=0.9, language="en")
+        captured_body = {}
+
+        def mock_api(method, path, api_key, body=None, **kw):
+            captured_body["data"] = json.loads(body.decode("utf-8"))
+            return b"\xff\xfb\x90\x00"  # fake MP3
+
+        with patch("live_telemetry_evo.tts.elevenlabs_engine._api_request",
+                   side_effect=mock_api):
+            engine._synthesize_api("test", profile)
+
+        payload = captured_body["data"]
+        vs = payload["voice_settings"]
+        assert vs["stability"] == 0.8
+        assert vs["similarity_boost"] == 0.9
+        assert vs["style"] == 0.0
+        assert vs["speed"] == 0.9
+        assert payload["language_code"] == "en"
+
+    def test_no_language_code_when_empty(self):
+        engine = ElevenLabsEngine()
+        engine._api_key = "test-key"
+        profile = VoiceProfile("Test", "vid", "model", language="")
+        captured = {}
+
+        def mock_api(method, path, api_key, body=None, **kw):
+            captured["data"] = json.loads(body.decode("utf-8"))
+            return b"\xff\xfb\x90\x00"
+
+        with patch("live_telemetry_evo.tts.elevenlabs_engine._api_request",
+                   side_effect=mock_api):
+            engine._synthesize_api("test", profile)
+
+        assert "language_code" not in captured["data"]
+
+
+class TestNoAPIKeyLogged:
+    def test_api_key_not_in_log_calls(self):
+        """Ensure API keys are never passed to log()."""
+        import live_telemetry_evo.tts.elevenlabs_engine as mod
+        source = Path(mod.__file__).read_text(encoding="utf-8")
+        for line in source.splitlines():
+            if "log(" in line or "log_action(" in line:
+                assert "api_key" not in line.lower() or "never logged" in line.lower() or \
+                       "no api key" in line.lower() or "# " in line, \
+                    f"Potential API key leak in log call: {line.strip()}"

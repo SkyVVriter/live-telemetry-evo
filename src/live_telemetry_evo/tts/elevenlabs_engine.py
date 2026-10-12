@@ -48,6 +48,9 @@ class VoiceProfile:
     model_id: str = "eleven_multilingual_v2"
     stability: float = 0.5
     similarity_boost: float = 0.75
+    style: float = 0.0
+    speed: float = 1.0
+    language: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -60,10 +63,17 @@ class VoiceProfile:
             model_id=str(d.get("model_id", "eleven_multilingual_v2")),
             stability=float(d.get("stability", 0.5)),
             similarity_boost=float(d.get("similarity_boost", 0.75)),
+            style=float(d.get("style", 0.0)),
+            speed=float(d.get("speed", 1.0)),
+            language=str(d.get("language", "")),
         )
 
 
 DEFAULT_PROFILES: list[VoiceProfile] = [
+    VoiceProfile("GP", "L2sW7YcZbRyXB141p5PF",
+                 "eleven_multilingual_v2",
+                 stability=0.8, similarity_boost=0.9,
+                 style=0.0, speed=0.9, language="en"),
     VoiceProfile("Rachel (EN)", "21m00Tcm4TlvDq8ikWAM",
                  "eleven_multilingual_v2", 0.5, 0.75),
     VoiceProfile("Race Engineer (RU)", "21m00Tcm4TlvDq8ikWAM",
@@ -287,14 +297,20 @@ class ElevenLabsEngine(VoiceEngine):
 
     def _synthesize_api(self, text: str, profile: VoiceProfile) -> bytes:
         """Call the ElevenLabs TTS API and return raw MP3 bytes."""
-        body = json.dumps({
+        voice_settings: dict[str, float] = {
+            "stability": profile.stability,
+            "similarity_boost": profile.similarity_boost,
+            "style": profile.style,
+            "speed": profile.speed,
+        }
+        payload: dict[str, Any] = {
             "text": text,
             "model_id": profile.model_id,
-            "voice_settings": {
-                "stability": profile.stability,
-                "similarity_boost": profile.similarity_boost,
-            },
-        }).encode("utf-8")
+            "voice_settings": voice_settings,
+        }
+        if profile.language:
+            payload["language_code"] = profile.language
+        body = json.dumps(payload).encode("utf-8")
         return _api_request(
             "POST",
             f"/text-to-speech/{profile.voice_id}",
@@ -305,7 +321,9 @@ class ElevenLabsEngine(VoiceEngine):
     def _cache_path(self, text: str, profile: VoiceProfile) -> Path:
         key = hashlib.md5(
             f"{profile.voice_id}:{profile.model_id}:"
-            f"{profile.stability}:{profile.similarity_boost}:{text}".encode()
+            f"{profile.stability}:{profile.similarity_boost}:"
+            f"{profile.style}:{profile.speed}:{profile.language}:"
+            f"{text}".encode()
         ).hexdigest()
         return _cache_dir() / f"el_{key}.mp3"
 
