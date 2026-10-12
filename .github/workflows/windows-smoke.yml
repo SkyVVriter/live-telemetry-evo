@@ -205,44 +205,11 @@ jobs:
             $hSize = (Get-Item $hiddenPng).Length
             $sizeDiffPct = [math]::Abs($vSize - $hSize) / [math]::Max($vSize, 1) * 100
             Write-Host "Size diff: $([math]::Round($sizeDiffPct, 1))% (visible=$vSize, hidden=$hSize)"
-            # Use Python+PIL to compare actual pixel differences in the
-            # widget areas. The overlay has widgets in the four corners
-            # and bottom center — sample those regions.
-            python -c @"
-import sys
-try:
-    from PIL import Image
-    vis = Image.open(r'$visiblePng').convert('RGB')
-    hid = Image.open(r'$hiddenPng').convert('RGB')
-    w, h = vis.size
-    # Sample regions where widgets are expected (relative coords)
-    regions = [
-        (0, 0, w//4, h//3),           # top-left (FL wheel)
-        (3*w//4, 0, w, h//3),         # top-right (FR wheel)
-        (0, 2*h//3, w//4, h),         # bottom-left (RL wheel)
-        (3*w//4, 2*h//3, w, h),       # bottom-right (RR wheel)
-        (w//4, 3*h//4, 3*w//4, h),    # bottom-center (engine bar)
-    ]
-    total_diff = 0
-    total_pixels = 0
-    for (x1, y1, x2, y2) in regions:
-        for x in range(x1, x2, 4):
-            for y in range(y1, y2, 4):
-                vp = vis.getpixel((x, y))
-                hp = hid.getpixel((x, y))
-                diff = sum(abs(a - b) for a, b in zip(vp, hp))
-                total_diff += diff
-                total_pixels += 1
-    avg_diff = total_diff / max(total_pixels, 1)
-    print(f'Average pixel diff in widget regions: {avg_diff:.1f} (sampled {total_pixels} pixels)')
-    if avg_diff < 5.0:
-        print('FAIL: widget regions are nearly identical — overlay was not hidden')
-        sys.exit(1)
-    else:
-        print('PASS: overlay-hidden screenshot differs significantly in widget areas')
-except ImportError:
-    print('PIL not available — skipping pixel comparison (hash check passed)')
-"@
+            # Use Python+PIL to compare pixel differences in widget areas
+            python (Join-Path $env:GITHUB_WORKSPACE 'tools' 'compare_screenshots.py') $visiblePng $hiddenPng
+            if ($LASTEXITCODE -ne 0) {
+              throw "Overlay screenshot pixel comparison failed"
+            }
           } else {
             Write-Host "WARNING: missing overlay screenshot pair for diff check"
           }
