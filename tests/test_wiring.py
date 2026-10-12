@@ -123,6 +123,27 @@ class TestConnectionAuth:
         assert "401" in msg
         assert "токен" in msg.lower() or "Unauthorized" in msg
 
+    @pytest.mark.parametrize("code", [404, 405])
+    def test_test_connection_old_server_needs_update(self, code):
+        """GET /race/sessions on an older (POST-only) server is 404/405."""
+        from live_telemetry_evo.race_worker_client import RaceWorkerClient
+        import urllib.error
+
+        def mock_request(method, url, token, body=None):
+            assert method == "GET"
+            assert url.endswith("/race/sessions")
+            raise urllib.error.HTTPError(
+                url, code, "Method Not Allowed", {}, None)
+
+        with patch("live_telemetry_evo.race_worker_client._request",
+                   side_effect=mock_request):
+            c = RaceWorkerClient(base_url="https://host.com", token="tok")
+            ok, msg = c.test_connection()
+
+        assert ok is False
+        assert str(code) in msg
+        assert "server needs update" in msg.lower()
+
     def test_client_configure_normalizes(self):
         from live_telemetry_evo.race_worker_client import RaceWorkerClient
         c = RaceWorkerClient()

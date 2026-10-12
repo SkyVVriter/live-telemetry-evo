@@ -166,6 +166,11 @@ class RaceWorkerClient:
             body = _http_error_body(e)
             if e.code == 401:
                 return False, "401 Unauthorized — неверный токен"
+            if e.code in (404, 405):
+                return False, (
+                    f"HTTP {e.code}: server needs update — "
+                    "обновите race-worker (GET /race/sessions)"
+                )
             extra = f" {body}" if body else ""
             return False, f"HTTP {e.code}: {e.reason}{extra}"
         except Exception as e:

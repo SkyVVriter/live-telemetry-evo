@@ -15,10 +15,16 @@ import ctypes
 import ctypes.wintypes
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional
 
 from ..logbook import log
+from .dinput_format import (
+    _DI_BUTTON_COUNT,
+    _DIJOYSTATE2,
+    c_dfDIJoystick2,
+)
 
 if sys.platform != "win32":
     raise ImportError("DirectInput8 backend is Windows-only")
@@ -169,9 +175,7 @@ _DI8DEVCLASS_GAMECTRL = 4
 _DIEDFL_ATTACHEDONLY = 0x00000001
 _DISCL_BACKGROUND = 0x00000008
 _DISCL_NONEXCLUSIVE = 0x00000002
-
-# DIJOYSTATE2 button count
-_DI_BUTTON_COUNT = 128
+_ERROR_LOG_INTERVAL_S = 10.0
 
 # ---------------------------------------------------------------------------
 # DIDEVICEINSTANCEW (used by EnumDevices callback)
@@ -192,50 +196,7 @@ class _DIDEVICEINSTANCEW(ctypes.Structure):
     ]
 
 
-# ---------------------------------------------------------------------------
-# DIJOYSTATE2 (extended joystick state — 128 buttons)
-# ---------------------------------------------------------------------------
-class _DIJOYSTATE2(ctypes.Structure):
-    _fields_ = [
-        ("lX", ctypes.c_long),
-        ("lY", ctypes.c_long),
-        ("lZ", ctypes.c_long),
-        ("lRx", ctypes.c_long),
-        ("lRy", ctypes.c_long),
-        ("lRz", ctypes.c_long),
-        ("rglSlider", ctypes.c_long * 2),
-        ("rgdwPOV", ctypes.wintypes.DWORD * 4),
-        ("rgbButtons", ctypes.c_ubyte * _DI_BUTTON_COUNT),
-        ("lVX", ctypes.c_long),
-        ("lVY", ctypes.c_long),
-        ("lVZ", ctypes.c_long),
-        ("lVRx", ctypes.c_long),
-        ("lVRy", ctypes.c_long),
-        ("lVRz", ctypes.c_long),
-        ("rglVSlider", ctypes.c_long * 2),
-        ("lAX", ctypes.c_long),
-        ("lAY", ctypes.c_long),
-        ("lAZ", ctypes.c_long),
-        ("lARx", ctypes.c_long),
-        ("lARy", ctypes.c_long),
-        ("lARz", ctypes.c_long),
-        ("rglASlider", ctypes.c_long * 2),
-        ("lFX", ctypes.c_long),
-        ("lFY", ctypes.c_long),
-        ("lFZ", ctypes.c_long),
-        ("lFRx", ctypes.c_long),
-        ("lFRy", ctypes.c_long),
-        ("lFRz", ctypes.c_long),
-        ("rglFSlider", ctypes.c_long * 2),
-    ]
-
-# c_dfDIJoystick2: we need this GUID for SetDataFormat.
-# Building the full DIDATAFORMAT struct from scratch is verbose;
-# instead we load it from dinput8.dll's exported symbol.
-
-_GUID_SysMouse = _make_guid(
-    0x6F1D2B60, 0xD5A0, 0x11CF,
-    [0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00])
+# c_dfDIJoystick2 is built in dinput_format.py (not exported from dinput8.dll).
 
 
 def _get_dinput8():
@@ -292,8 +253,19 @@ class DirectInput8:
         self._hwnd: ctypes.c_void_p = ctypes.c_void_p(0)
         self._devices: list[DInputDevice] = []
         self._open_devices: dict[bytes, ctypes.c_void_p] = {}
+        self._failed_open: dict[bytes, str] = {}
+        self._error_log_at: dict[str, float] = {}
         self._lock = threading.Lock()
         self._inited = False
+
+    def _log_limited(self, key: str, message: str) -> None:
+        """Log ``message`` at most once per ``_ERROR_LOG_INTERVAL_S``."""
+        now = time.monotonic()
+        last = self._error_log_at.get(key, 0.0)
+        if now - last < _ERROR_LOG_INTERVAL_S:
+            return
+        self._error_log_at[key] = now
+        log(message)
 
     def init(self, hwnd: int = 0) -> bool:
         """Initialize COM and create the IDirectInput8W instance.
@@ -409,9 +381,15 @@ class DirectInput8:
         return list(self._devices)
 
     def open_device(self, dev: DInputDevice) -> bool:
-        """Open a device for polling with background non-exclusive access."""
+        """Open a device for polling with background non-exclusive access.
+
+        Setup (CreateDevice / SetDataFormat / SetCooperativeLevel / Acquire)
+        runs once. Failures are remembered so the poll loop never retries.
+        """
         if dev.guid_instance in self._open_devices:
             return True
+        if dev.guid_instance in self._failed_open:
+            return False
         if not self._inited:
             return False
 
@@ -434,29 +412,28 @@ class DirectInput8:
         hr = create_fn(self._di, ctypes.byref(guid),
                        ctypes.byref(device_ptr), None)
         if hr != 0:
-            log(f"[dinput] CreateDevice failed for {dev.display_name}: "
-                f"0x{hr & 0xFFFFFFFF:08X}")
+            self._fail_open(
+                dev, f"CreateDevice failed: 0x{hr & 0xFFFFFFFF:08X}")
             return False
 
         dev_vtbl = ctypes.cast(
             device_ptr, ctypes.POINTER(ctypes.c_void_p)).contents
         dev_vt = ctypes.cast(dev_vtbl, ctypes.POINTER(ctypes.c_void_p))
 
-        # SetDataFormat — vtable index 10
-        # We need c_dfDIJoystick2 from dinput8.dll
+        # SetDataFormat — vtable index 10. c_dfDIJoystick2 is built in
+        # ctypes (the symbol is not exported from dinput8.dll).
         try:
-            dinput8 = _get_dinput8()
-            c_dfDIJoystick2_ptr = ctypes.c_void_p.in_dll(
-                dinput8, "c_dfDIJoystick2")
+            fmt = c_dfDIJoystick2()
             SET_DF = ctypes.WINFUNCTYPE(
                 ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)
             set_df = SET_DF(dev_vt[10])
-            hr = set_df(device_ptr, c_dfDIJoystick2_ptr)
+            hr = set_df(device_ptr, ctypes.byref(fmt))
             if hr != 0:
-                log(f"[dinput] SetDataFormat failed: 0x{hr & 0xFFFFFFFF:08X}")
+                self._fail_open(
+                    dev, f"SetDataFormat failed: 0x{hr & 0xFFFFFFFF:08X}")
                 return False
-        except (OSError, ValueError) as e:
-            log(f"[dinput] SetDataFormat symbol lookup failed: {e}")
+        except Exception as e:
+            self._fail_open(dev, f"SetDataFormat error: {e}")
             return False
 
         # SetCooperativeLevel — vtable index 13
@@ -467,8 +444,8 @@ class DirectInput8:
         flags = _DISCL_BACKGROUND | _DISCL_NONEXCLUSIVE
         hr = set_cl(device_ptr, self._hwnd, flags)
         if hr != 0:
-            log(f"[dinput] SetCooperativeLevel failed: "
-                f"0x{hr & 0xFFFFFFFF:08X}")
+            self._fail_open(
+                dev, f"SetCooperativeLevel failed: 0x{hr & 0xFFFFFFFF:08X}")
             return False
 
         # Acquire — vtable index 7
@@ -477,7 +454,21 @@ class DirectInput8:
         acquire(device_ptr)
 
         self._open_devices[dev.guid_instance] = device_ptr
+        log(f"[dinput] opened {dev.display_name} "
+            f"(VID:PID={dev.vid_pid}, {dev.num_buttons} btn)")
         return True
+
+    def _fail_open(self, dev: DInputDevice, reason: str) -> None:
+        self._failed_open[dev.guid_instance] = reason
+        self._log_limited(
+            f"open:{dev.guid_instance.hex()}",
+            f"[dinput] open failed for {dev.display_name}: {reason}")
+
+    def is_open(self, dev: DInputDevice) -> bool:
+        return dev.guid_instance in self._open_devices
+
+    def open_failed(self, dev: DInputDevice) -> bool:
+        return dev.guid_instance in self._failed_open
 
     def read_buttons(self, dev: DInputDevice) -> list[bool]:
         """Read button states for an opened device. Returns list of bools."""
@@ -509,6 +500,10 @@ class DirectInput8:
             hr = get_state(
                 device_ptr, ctypes.sizeof(state), ctypes.byref(state))
             if hr != 0:
+                self._log_limited(
+                    f"state:{dev.guid_instance.hex()}",
+                    f"[dinput] GetDeviceState failed for {dev.display_name}: "
+                    f"0x{hr & 0xFFFFFFFF:08X}")
                 return []
 
         return [bool(state.rgbButtons[i] & 0x80)
@@ -586,12 +581,27 @@ def list_devices_dinput() -> list[DInputDevice]:
     return di.enumerate()
 
 
+def try_open_device(dev: DInputDevice) -> bool:
+    """Open ``dev`` once. Returns False if setup already failed."""
+    di = _get_di8()
+    if di is None:
+        return False
+    return di.open_device(dev)
+
+
+def dinput_any_open(devs: list[DInputDevice]) -> bool:
+    """True if at least one device can be opened for polling."""
+    return any(try_open_device(d) for d in devs)
+
+
 def read_device_buttons(dev: DInputDevice) -> list[bool]:
-    """Read button states for a device. Opens it if needed."""
+    """Read button states for a device. Opens it once if needed."""
     di = _get_di8()
     if di is None:
         return []
-    if dev.guid_instance not in di._open_devices:
+    if di.open_failed(dev):
+        return []
+    if not di.is_open(dev):
         if not di.open_device(dev):
             return []
     return di.read_buttons(dev)

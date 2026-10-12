@@ -348,6 +348,29 @@ def _run_self_test() -> int:
     # --- FATAL checks (hardware-independent; must pass on any runner) ---
     # Only "device count > 0" is allowed to be non-fatal on CI.
 
+    # DIJOYSTATE2 data format (ctypes, no dinput8.dll export)
+    try:
+        from .ptt.dinput_format import (
+            DIJOYSTATE2_SIZE, _DF_JOYSTICK2_NUM_OBJS, _DIJOYSTATE2,
+            build_dijoystate2_data_format,
+        )
+        built = build_dijoystate2_data_format()
+        js_sz = ctypes.sizeof(_DIJOYSTATE2)
+        ok_fmt = (
+            js_sz == DIJOYSTATE2_SIZE
+            and built.data_size == DIJOYSTATE2_SIZE
+            and built.num_objs == _DF_JOYSTICK2_NUM_OBJS
+            and built.fmt.rgodf
+        )
+        _p(f"dinput format: sizeof(DIJOYSTATE2)={js_sz} "
+           f"dwNumObjs={built.num_objs} dwDataSize={built.data_size}")
+        results["dinput_format"] = ok_fmt
+        if not ok_fmt:
+            _p("dinput format: FAIL (size/object-count mismatch)")
+    except Exception as e:
+        _p(f"dinput format: FAIL ({e})")
+        results["dinput_format"] = False
+
     # TTS engines registered
     try:
         from .tts import list_engines

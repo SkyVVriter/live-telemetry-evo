@@ -6,9 +6,10 @@ Joystick/wheel capture uses three backends in priority order:
 1. **DirectInput8** (``dinput.py``): raw ctypes COM, sees all HID game
    controllers (Moza, Fanatec, Thrustmaster …), background-safe via
    ``DISCL_BACKGROUND | DISCL_NONEXCLUSIVE``, supports 128 buttons.
-2. **winmm** (``joyGetPosEx``): legacy Windows Multimedia API, up to
-   16 devices × 32 buttons. Works for older/legacy-registered devices.
-3. **pygame** (SDL2): fallback for non-Windows platforms.
+2. **pygame** (SDL2): fallback when DirectInput cannot poll (it sees
+   128 buttons on devices like the Moza R16). Used on non-Windows too.
+3. **winmm** (``joyGetPosEx``): legacy Windows Multimedia API, up to
+   16 devices × 32 buttons. Last resort for older mapper devices.
 
 Devices are freshly enumerated each time ``list_joysticks()`` is called
 (handles hotplug).
@@ -190,7 +191,7 @@ def _read_buttons_winmm(joy_id: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Unified joystick listing: DI8 -> winmm -> pygame
+# Unified joystick listing: DI8 (if pollable) -> pygame -> winmm
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -204,13 +205,23 @@ class JoystickInfo:
 
 
 def list_joysticks() -> list[dict]:
-    """Enumerate joysticks, trying DI8 first, then winmm, then pygame."""
+    """Enumerate joysticks: DI8 if it can poll, else pygame, else winmm."""
     result = _list_dinput()
-    if result:
+    if result and _dinput_can_poll(result):
         log(f"[ptt/input] DirectInput8: {len(result)} device(s)")
         for j in result:
             log(f"[ptt/input]   [{j['index']}] {j['name']} "
                 f"({j['buttons']} btn, {j.get('vid_pid', '')})")
+        return result
+    if result:
+        log(f"[ptt/input] DirectInput8 enumerated {len(result)} device(s) "
+            "but none can be polled — falling back to pygame")
+
+    result = _list_pygame()
+    if result:
+        log(f"[ptt/input] pygame: {len(result)} device(s)")
+        for j in result:
+            log(f"[ptt/input]   [{j['index']}] {j['name']} ({j['buttons']} btn)")
         return result
 
     result = _list_winmm()
@@ -220,13 +231,21 @@ def list_joysticks() -> list[dict]:
             log(f"[ptt/input]   [{j['index']}] {j['name']} ({j['buttons']} btn)")
         return result
 
-    result = _list_pygame()
-    if result:
-        log(f"[ptt/input] pygame: {len(result)} device(s)")
-        return result
-
     log("[ptt/input] no joystick backend found devices")
     return []
+
+
+def _dinput_can_poll(listed: list[dict]) -> bool:
+    """True if at least one DI device can be opened, or none need probing."""
+    real = [j.get("_dinput_dev") for j in listed if j.get("_dinput_dev") is not None]
+    if not real:
+        return bool(listed)
+    try:
+        from .dinput import dinput_any_open
+        return dinput_any_open(real)
+    except (ImportError, OSError) as e:
+        log(f"[ptt/input] DirectInput8 open probe failed: {e}")
+        return False
 
 
 def _list_dinput() -> list[dict]:
@@ -249,11 +268,26 @@ def _list_winmm() -> list[dict]:
             for j in joys]
 
 
+def _ensure_pygame():
+    """Init pygame joystick, allowing background events without a flashy window."""
+    import os
+    os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
+    import pygame
+    pygame.init()
+    try:
+        pygame.display.init()
+        flags = getattr(pygame, "HIDDEN", 0) | getattr(pygame, "NOFRAME", 0)
+        if flags:
+            pygame.display.set_mode((1, 1), flags)
+    except Exception as e:
+        log(f"[ptt/input] pygame display init skipped: {e}")
+    pygame.joystick.init()
+    return pygame
+
+
 def _list_pygame() -> list[dict]:
     try:
-        import pygame
-        pygame.init()
-        pygame.joystick.init()
+        pygame = _ensure_pygame()
         result = []
         for i in range(pygame.joystick.get_count()):
             j = pygame.joystick.Joystick(i)
@@ -262,7 +296,8 @@ def _list_pygame() -> list[dict]:
                            "buttons": j.get_numbuttons(),
                            "backend": "pygame"})
         return result
-    except (ImportError, Exception):
+    except (ImportError, Exception) as e:
+        log(f"[ptt/input] pygame list failed: {e}")
         return []
 
 
@@ -296,9 +331,7 @@ def run_diagnostics() -> str:
     lines.append("")
     lines.append("--- pygame (SDL2) ---")
     try:
-        import pygame
-        pygame.init()
-        pygame.joystick.init()
+        pygame = _ensure_pygame()
         n = pygame.joystick.get_count()
         if n:
             for i in range(n):
@@ -349,8 +382,11 @@ class InputListener:
     def stop(self) -> None:
         self._stop.set()
         self._stop_keyboard_listener()
-        if self._joy_thread is not None:
-            self._joy_thread.join(timeout=2.0)
+        t = self._joy_thread
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=2.0)
+            self._joy_thread = None
+        elif t is threading.current_thread():
             self._joy_thread = None
 
     def start_assign(self, callback: Callable[[PTTBinding], None]) -> None:
@@ -435,14 +471,27 @@ class InputListener:
         if not joys:
             return
 
-        dinput_devs = [j.get("_dinput_dev") for j in joys
-                       if j.get("backend") == "dinput8"]
-        if dinput_devs:
-            self._dinput_poll_loop(joys, dinput_devs)
-        elif joys[0].get("backend") == "winmm":
-            self._winmm_poll_loop(joys)
-        else:
+        backend = joys[0].get("backend")
+        if backend == "dinput8":
+            dinput_devs = [j.get("_dinput_dev") for j in joys
+                           if j.get("backend") == "dinput8"]
+            opened = False
+            try:
+                from .dinput import dinput_any_open
+                real = [d for d in dinput_devs if d is not None]
+                opened = bool(real) and dinput_any_open(real)
+            except (ImportError, OSError) as e:
+                log(f"[ptt/input] DirectInput8 unavailable for poll: {e}")
+            if opened:
+                self._dinput_poll_loop(joys, dinput_devs)
+                return
+            log("[ptt/input] DirectInput8 poll failed — falling back to pygame")
             self._pygame_poll_loop()
+            return
+        if backend == "winmm":
+            self._winmm_poll_loop(joys)
+            return
+        self._pygame_poll_loop()
 
     def _dinput_poll_loop(self, joys, dinput_devs):
         from .dinput import read_device_buttons
@@ -530,20 +579,33 @@ class InputListener:
 
     def _pygame_poll_loop(self):
         try:
-            import pygame
-            pygame.init()
-            pygame.joystick.init()
-        except (ImportError, Exception):
+            pygame = _ensure_pygame()
+        except (ImportError, Exception) as e:
+            log(f"[ptt/input] pygame poll init failed: {e}")
             return
+        sticks = []
+        try:
+            for i in range(pygame.joystick.get_count()):
+                joy = pygame.joystick.Joystick(i)
+                joy.init()
+                sticks.append(joy)
+        except Exception as e:
+            log(f"[ptt/input] pygame joystick init failed: {e}")
+            return
+        if not sticks:
+            log("[ptt/input] pygame poll: 0 devices")
+            return
+        log(f"[ptt/input] pygame poll: {len(sticks)} device(s), "
+            f"{sticks[0].get_numbuttons()} btn on [0]")
         prev_states: dict[tuple[int, int], bool] = {}
+        err_logged = False
         while not self._stop.is_set():
             try:
                 pygame.event.pump()
-                for ji in range(pygame.joystick.get_count()):
-                    joy = pygame.joystick.Joystick(ji)
-                    joy.init()
-                    for bi in range(joy.get_numbuttons()):
-                        pressed = joy.get_button(bi)
+                for ji, joy in enumerate(sticks):
+                    nbtn = joy.get_numbuttons()
+                    for bi in range(nbtn):
+                        pressed = bool(joy.get_button(bi))
                         key = (ji, bi)
                         was = prev_states.get(key, False)
                         if pressed and not was:
@@ -552,6 +614,8 @@ class InputListener:
                                                joy_id=ji, button_id=bi)
                                 cb = self._assign_callback
                                 self._assign_callback = None
+                                log(f"[ptt/input] pygame captured Joy {ji} "
+                                    f"Btn {bi}")
                                 self.stop()
                                 cb(b)
                                 return
@@ -571,6 +635,8 @@ class InputListener:
                                 if self._on_release:
                                     self._on_release()
                         prev_states[key] = pressed
-            except Exception:
-                pass
+            except Exception as e:
+                if not err_logged:
+                    log(f"[ptt/input] pygame poll error: {e}")
+                    err_logged = True
             self._stop.wait(0.02)

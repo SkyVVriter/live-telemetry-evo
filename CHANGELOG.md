@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.12] - 2026-10-12
+
+### Fixed
+- **DirectInput `c_dfDIJoystick2` flood**: that symbol lives in `dinput8.lib`, not `dinput8.dll`. The client now builds the official `DIDATAFORMAT` / `DIOBJECTDATAFORMAT` array for `DIJOYSTATE2` (272 bytes, 164 objects, 128 buttons) in ctypes. Device setup (`SetDataFormat` / cooperative level / acquire) runs once per device; repeated errors are rate-limited.
+- **PTT backend order**: if DirectInput enumerates devices but cannot poll them, PTT listing, assign, and hold fall back to pygame (128 buttons). winmm is last. pygame inits with `SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS` and a hidden display; assign no longer deadlocks by joining its own poll thread.
+- **Diagnostics Health 405**: the Health line uses authenticated `GET /race/sessions` (same as Check Connection). HTTP 404/405 is reported as `server needs update` (older race-worker is POST-only on that path).
+
+### Added
+- Unit test that builds the `DIJOYSTATE2` data format and checks sizes/offsets/object count. `--self-test` treats a format-size mismatch as fatal.
+
 ## [0.9.0-test.11] - 2026-10-12
 
 ### Fixed

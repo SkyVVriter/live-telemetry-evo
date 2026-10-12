@@ -830,6 +830,175 @@ class TestWinmmBackend:
             mod._winmm_funcs = orig
 
 
+class TestDIJoystick2DataFormat:
+    """Build DIDATAFORMAT/DIOBJECTDATAFORMAT for DIJOYSTATE2 (any OS)."""
+
+    def test_dijoystate2_size_and_offsets(self):
+        import ctypes
+        from live_telemetry_evo.ptt.dinput_format import (
+            DIJOYSTATE2_SIZE, _DI_BUTTON_COUNT, _DIJOYSTATE2,
+        )
+        assert ctypes.sizeof(_DIJOYSTATE2) == DIJOYSTATE2_SIZE == 272
+        assert _DIJOYSTATE2.lX.offset == 0
+        assert _DIJOYSTATE2.rgbButtons.offset == 48
+        assert _DIJOYSTATE2.lVX.offset == 176
+        assert _DI_BUTTON_COUNT == 128
+        state = _DIJOYSTATE2()
+        assert len(state.rgbButtons) == 128
+
+    def test_builds_c_dfDIJoystick2(self):
+        import ctypes
+        from live_telemetry_evo.ptt.dinput_format import (
+            DIDF_ABSAXIS, DIJOYSTATE2_SIZE, _DF_JOYSTICK2_NUM_OBJS,
+            _DIDATAFORMAT, _DIOBJECTDATAFORMAT, _DIJOYSTATE2,
+            build_dijoystate2_data_format, c_dfDIJoystick2,
+        )
+        built = build_dijoystate2_data_format()
+        assert built.num_objs == _DF_JOYSTICK2_NUM_OBJS == 164
+        assert built.data_size == DIJOYSTATE2_SIZE == 272
+        assert built.obj_size == ctypes.sizeof(_DIOBJECTDATAFORMAT)
+        assert built.fmt_size == ctypes.sizeof(_DIDATAFORMAT)
+        assert built.fmt.dwFlags == DIDF_ABSAXIS
+        assert built.fmt.dwNumObjs == 164
+        assert built.fmt.dwDataSize == 272
+        assert built.fmt.rgodf
+        # Buttons 0 and 127 sit at rgbButtons[0] / [127]
+        btn0 = _DIJOYSTATE2.rgbButtons.offset
+        assert built.objects[12].dwOfs == btn0
+        assert built.objects[12 + 127].dwOfs == btn0 + 127
+        # Cached builder returns the same live object
+        assert c_dfDIJoystick2() is c_dfDIJoystick2()
+        assert ctypes.sizeof(_DIJOYSTATE2) == 272
+
+    def test_dinput_module_does_not_lookup_dll_symbol(self):
+        src = Path(__file__).parent.parent / "src" / "live_telemetry_evo" / "ptt" / "dinput.py"
+        text = src.read_text(encoding="utf-8")
+        assert "in_dll" not in text
+        assert "c_dfDIJoystick2()" in text or "c_dfDIJoystick2" in text
+
+
+class TestPygamePTTBackend:
+    """PTT listing/capture must work when DirectInput cannot poll."""
+
+    def test_list_joysticks_falls_back_to_pygame(self):
+        from live_telemetry_evo.ptt import input_binding as mod
+        di = [{"index": 0, "name": "MOZA R16 Ultra Base", "buttons": 128,
+               "backend": "dinput8", "vid_pid": "346E:0000",
+               "_dinput_dev": object()}]
+        pg = [{"index": 0, "name": "MOZA R16 Ultra Base", "buttons": 128,
+               "backend": "pygame"}]
+        with patch.object(mod, "_list_dinput", return_value=di), \
+             patch.object(mod, "_dinput_can_poll", return_value=False), \
+             patch.object(mod, "_list_pygame", return_value=pg), \
+             patch.object(mod, "_list_winmm", return_value=[]):
+            result = list_joysticks()
+        assert result[0]["backend"] == "pygame"
+        assert result[0]["buttons"] == 128
+
+    def test_pygame_assign_captures_high_button(self):
+        from live_telemetry_evo.ptt import input_binding as mod
+
+        class _Joy:
+            def __init__(self):
+                self._buttons = [0] * 128
+
+            def init(self):
+                return None
+
+            def get_name(self):
+                return "MOZA R16 Ultra Base"
+
+            def get_numbuttons(self):
+                return 128
+
+            def get_button(self, i):
+                return bool(self._buttons[i])
+
+        joy = _Joy()
+        fake_pg = MagicMock()
+        fake_pg.joystick.get_count.return_value = 1
+        fake_pg.joystick.Joystick.return_value = joy
+        captured: list = []
+
+        def _on_bind(b):
+            captured.append(b)
+
+        with patch.object(mod, "list_joysticks",
+                          return_value=[{"index": 0, "name": "R16",
+                                         "buttons": 128,
+                                         "backend": "pygame"}]), \
+             patch.object(mod, "_ensure_pygame", return_value=fake_pg):
+            listener = InputListener()
+            listener.start_assign(_on_bind)
+            time.sleep(0.05)
+            joy._buttons[64] = 1
+            deadline = time.monotonic() + 1.5
+            while not captured and time.monotonic() < deadline:
+                time.sleep(0.02)
+            listener.stop()
+
+        assert captured, "pygame backend did not capture a button press"
+        assert captured[0].type == BindingType.JOYSTICK
+        assert captured[0].joy_id == 0
+        assert captured[0].button_id == 64
+
+    def test_pygame_press_release_honors_binding(self):
+        from live_telemetry_evo.ptt import input_binding as mod
+
+        class _Joy:
+            def __init__(self):
+                self._buttons = [0] * 128
+
+            def init(self):
+                return None
+
+            def get_name(self):
+                return "R16"
+
+            def get_numbuttons(self):
+                return 128
+
+            def get_button(self, i):
+                return bool(self._buttons[i])
+
+        joy = _Joy()
+        fake_pg = MagicMock()
+        fake_pg.joystick.get_count.return_value = 1
+        fake_pg.joystick.Joystick.return_value = joy
+        events: list[str] = []
+
+        with patch.object(mod, "list_joysticks",
+                          return_value=[{"index": 0, "name": "R16",
+                                         "buttons": 128,
+                                         "backend": "pygame"}]), \
+             patch.object(mod, "_ensure_pygame", return_value=fake_pg):
+            listener = InputListener()
+            listener.set_binding(PTTBinding(
+                type=BindingType.JOYSTICK, joy_id=0, button_id=7))
+            listener.start(lambda: events.append("press"),
+                           lambda: events.append("release"))
+            time.sleep(0.05)
+            joy._buttons[7] = 1
+            deadline = time.monotonic() + 1.5
+            while "press" not in events and time.monotonic() < deadline:
+                time.sleep(0.02)
+            joy._buttons[7] = 0
+            deadline = time.monotonic() + 1.5
+            while "release" not in events and time.monotonic() < deadline:
+                time.sleep(0.02)
+            listener.stop()
+
+        assert events == ["press", "release"]
+
+    def test_stop_from_joy_thread_does_not_deadlock(self):
+        listener = InputListener()
+        listener._joy_thread = threading.current_thread()
+        t0 = time.monotonic()
+        listener.stop()
+        assert time.monotonic() - t0 < 0.5
+        assert listener._joy_thread is None
+
+
 class TestDInputBackend:
     """Test the DirectInput8 backend structures and mocked listing."""
 
