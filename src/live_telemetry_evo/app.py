@@ -352,21 +352,24 @@ def _run_self_test() -> int:
     try:
         from .ptt.dinput_format import (
             DIJOYSTATE2_SIZE, _DF_JOYSTICK2_NUM_OBJS, _DIJOYSTATE2,
-            build_dijoystate2_data_format,
+            build_dijoystate2_data_format, format_header_summary,
+            validate_data_format,
         )
         built = build_dijoystate2_data_format()
         js_sz = ctypes.sizeof(_DIJOYSTATE2)
+        fmt_errors = validate_data_format(built)
         ok_fmt = bool(
             js_sz == DIJOYSTATE2_SIZE
             and built.data_size == DIJOYSTATE2_SIZE
             and built.num_objs == _DF_JOYSTICK2_NUM_OBJS
             and built.fmt.rgodf
+            and not fmt_errors
         )
-        _p(f"dinput format: sizeof(DIJOYSTATE2)={js_sz} "
-           f"dwNumObjs={built.num_objs} dwDataSize={built.data_size}")
+        _p(f"dinput format: {format_header_summary(built.fmt)}")
         results["dinput_format"] = ok_fmt
         if not ok_fmt:
-            _p("dinput format: FAIL (size/object-count mismatch)")
+            _p("dinput format: FAIL " + ("; ".join(fmt_errors) or
+                                        "(size/object-count mismatch)"))
     except Exception as e:
         _p(f"dinput format: FAIL ({e})")
         results["dinput_format"] = False

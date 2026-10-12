@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.13] - 2026-10-12
+
+### Fixed
+- **DirectInput SetDataFormat 0x80070057 (E_INVALIDARG)**: `SetDataFormat` was invoked at vtable index 10 (`GetDeviceData`) instead of 11, and `Poll` at 8 (`Unacquire`) instead of 25. The `DIDATAFORMAT` / `DIOBJECTDATAFORMAT` layout is now locked to the Windows SDK x64 sizes (`dwSize=32`, `dwObjSize=24`, pointer-aligned `rgodf` at offset 24), `dwFlags=DIDF_ABSAXIS`, live `pguid` pointers, `DIDFT_OPTIONAL|DIDFT_ANYINSTANCE` on every object, and `dwOfs < dwDataSize`. Object table matches Wine/SDK `c_dfDIJoystick2` (164 entries).
+
+### Added
+- pygame PTT logs every assign/press/release: device index, name, button, `pressed`/`released`.
+
 ## [0.9.0-test.12] - 2026-10-12
 
 ### Fixed

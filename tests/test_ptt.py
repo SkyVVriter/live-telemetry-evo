@@ -849,32 +849,66 @@ class TestDIJoystick2DataFormat:
     def test_builds_c_dfDIJoystick2(self):
         import ctypes
         from live_telemetry_evo.ptt.dinput_format import (
-            DIDF_ABSAXIS, DIJOYSTATE2_SIZE, _DF_JOYSTICK2_NUM_OBJS,
+            DIDATAFORMAT_SIZE, DIDF_ABSAXIS, DIOBJECTDATAFORMAT_SIZE,
+            DIJOYSTATE2_SIZE, _DF_JOYSTICK2_NUM_OBJS,
             _DIDATAFORMAT, _DIOBJECTDATAFORMAT, _DIJOYSTATE2,
             build_dijoystate2_data_format, c_dfDIJoystick2,
+            sdk_df_joystick2_objects, validate_data_format,
         )
         built = build_dijoystate2_data_format()
+        assert ctypes.sizeof(_DIDATAFORMAT) == DIDATAFORMAT_SIZE == 32
+        assert ctypes.sizeof(_DIOBJECTDATAFORMAT) == DIOBJECTDATAFORMAT_SIZE == 24
+        assert _DIDATAFORMAT.rgodf.offset == 24
+        assert _DIOBJECTDATAFORMAT.pguid.offset == 0
+        assert _DIOBJECTDATAFORMAT.dwOfs.offset == 8
         assert built.num_objs == _DF_JOYSTICK2_NUM_OBJS == 164
         assert built.data_size == DIJOYSTATE2_SIZE == 272
-        assert built.obj_size == ctypes.sizeof(_DIOBJECTDATAFORMAT)
-        assert built.fmt_size == ctypes.sizeof(_DIDATAFORMAT)
+        assert built.obj_size == 24
+        assert built.fmt_size == 32
         assert built.fmt.dwFlags == DIDF_ABSAXIS
         assert built.fmt.dwNumObjs == 164
         assert built.fmt.dwDataSize == 272
         assert built.fmt.rgodf
-        # Buttons 0 and 127 sit at rgbButtons[0] / [127]
         btn0 = _DIJOYSTATE2.rgbButtons.offset
         assert built.objects[12].dwOfs == btn0
         assert built.objects[12 + 127].dwOfs == btn0 + 127
-        # Cached builder returns the same live object
         assert c_dfDIJoystick2() is c_dfDIJoystick2()
-        assert ctypes.sizeof(_DIJOYSTATE2) == 272
+        assert validate_data_format(built) == []
+
+    def test_matches_sdk_object_table(self):
+        """Byte-for-byte match of (dwOfs, dwType, dwFlags) vs SDK/Wine table."""
+        from live_telemetry_evo.ptt.dinput_format import (
+            DIDFT_ANYINSTANCE, DIDFT_OPTIONAL,
+            build_dijoystate2_data_format, sdk_df_joystick2_objects,
+        )
+        built = build_dijoystate2_data_format()
+        expected = sdk_df_joystick2_objects()
+        assert len(built.objects) == len(expected) == 164
+        got = [(int(o.dwOfs), int(o.dwType), int(o.dwFlags))
+               for o in built.objects]
+        assert got == expected
+        for o in built.objects:
+            assert o.dwOfs < built.data_size
+            assert o.dwType & DIDFT_OPTIONAL
+            assert o.dwType & DIDFT_ANYINSTANCE
 
     def test_dinput_module_does_not_lookup_dll_symbol(self):
         src = Path(__file__).parent.parent / "src" / "live_telemetry_evo" / "ptt" / "dinput.py"
         text = src.read_text(encoding="utf-8")
         assert "in_dll" not in text
         assert "c_dfDIJoystick2()" in text or "c_dfDIJoystick2" in text
+
+    def test_device_vtable_slots(self):
+        """SetDataFormat is 11 (not GetDeviceData=10); Poll is 25 (not Unacquire=8)."""
+        src = Path(__file__).parent.parent / "src" / "live_telemetry_evo" / "ptt" / "dinput.py"
+        text = src.read_text(encoding="utf-8")
+        assert "VT_DEV_SETDATAFORMAT = 11" in text
+        assert "VT_DEV_GETDEVICEDATA = 10" in text
+        assert "VT_DEV_POLL = 25" in text
+        assert "VT_DEV_UNACQUIRE = 8" in text
+        assert "dev_vt[VT_DEV_SETDATAFORMAT]" in text
+        assert "dev_vt[VT_DEV_POLL]" in text
+        assert "dev_vt[10]" not in text
 
 
 class TestPygamePTTBackend:
@@ -942,6 +976,53 @@ class TestPygamePTTBackend:
         assert captured[0].joy_id == 0
         assert captured[0].button_id == 64
 
+    def test_pygame_logs_press_release_and_assign(self):
+        from live_telemetry_evo.ptt import input_binding as mod
+
+        class _Joy:
+            def __init__(self):
+                self._buttons = [0] * 128
+
+            def init(self):
+                return None
+
+            def get_name(self):
+                return "MOZA R16 Ultra Base"
+
+            def get_numbuttons(self):
+                return 128
+
+            def get_button(self, i):
+                return bool(self._buttons[i])
+
+        joy = _Joy()
+        fake_pg = MagicMock()
+        fake_pg.joystick.get_count.return_value = 1
+        fake_pg.joystick.Joystick.return_value = joy
+        logs: list[str] = []
+
+        def _on_bind(_b):
+            return None
+
+        with patch.object(mod, "list_joysticks",
+                          return_value=[{"index": 0, "name": "R16",
+                                         "buttons": 128,
+                                         "backend": "pygame"}]), \
+             patch.object(mod, "_ensure_pygame", return_value=fake_pg), \
+             patch.object(mod, "log", side_effect=lambda m: logs.append(m)):
+            listener = InputListener()
+            listener.start_assign(_on_bind)
+            time.sleep(0.05)
+            joy._buttons[3] = 1
+            deadline = time.monotonic() + 1.5
+            while not any("assign" in x for x in logs) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            listener.stop()
+
+        joined = "\n".join(logs)
+        assert "pygame event device=0 name='MOZA R16 Ultra Base' button=3 pressed" in joined
+        assert "pygame assign device=0 name='MOZA R16 Ultra Base' button=3" in joined
+
     def test_pygame_press_release_honors_binding(self):
         from live_telemetry_evo.ptt import input_binding as mod
 
@@ -966,12 +1047,14 @@ class TestPygamePTTBackend:
         fake_pg.joystick.get_count.return_value = 1
         fake_pg.joystick.Joystick.return_value = joy
         events: list[str] = []
+        logs: list[str] = []
 
         with patch.object(mod, "list_joysticks",
                           return_value=[{"index": 0, "name": "R16",
                                          "buttons": 128,
                                          "backend": "pygame"}]), \
-             patch.object(mod, "_ensure_pygame", return_value=fake_pg):
+             patch.object(mod, "_ensure_pygame", return_value=fake_pg), \
+             patch.object(mod, "log", side_effect=lambda m: logs.append(m)):
             listener = InputListener()
             listener.set_binding(PTTBinding(
                 type=BindingType.JOYSTICK, joy_id=0, button_id=7))
@@ -989,6 +1072,9 @@ class TestPygamePTTBackend:
             listener.stop()
 
         assert events == ["press", "release"]
+        joined = "\n".join(logs)
+        assert "button=7 pressed" in joined
+        assert "button=7 released" in joined
 
     def test_stop_from_joy_thread_does_not_deadlock(self):
         listener = InputListener()

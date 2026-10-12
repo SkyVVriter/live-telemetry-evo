@@ -24,6 +24,7 @@ from .dinput_format import (
     _DI_BUTTON_COUNT,
     _DIJOYSTATE2,
     c_dfDIJoystick2,
+    format_header_summary,
 )
 
 if sys.platform != "win32":
@@ -176,6 +177,20 @@ _DIEDFL_ATTACHEDONLY = 0x00000001
 _DISCL_BACKGROUND = 0x00000008
 _DISCL_NONEXCLUSIVE = 0x00000002
 _ERROR_LOG_INTERVAL_S = 10.0
+
+# IDirectInput8W / IDirectInputDevice8W vtable (IUnknown at 0..2).
+# SetDataFormat is 11, not 10 (10 = GetDeviceData — E_INVALIDARG).
+# Poll is 25, not 8 (8 = Unacquire).
+VT_RELEASE = 2
+VT_DI8_CREATEDEVICE = 3
+VT_DI8_ENUMDEVICES = 4
+VT_DEV_ACQUIRE = 7
+VT_DEV_UNACQUIRE = 8
+VT_DEV_GETDEVICESTATE = 9
+VT_DEV_GETDEVICEDATA = 10
+VT_DEV_SETDATAFORMAT = 11
+VT_DEV_SETCOOPERATIVELEVEL = 13
+VT_DEV_POLL = 25
 
 # ---------------------------------------------------------------------------
 # DIDEVICEINSTANCEW (used by EnumDevices callback)
@@ -361,7 +376,7 @@ class DirectInput8:
             ctypes.c_void_p,  # pvRef
             ctypes.wintypes.DWORD,  # dwFlags
         )
-        enum_fn = ENUM_FN(vtbl[4])
+        enum_fn = ENUM_FN(vtbl[VT_DI8_ENUMDEVICES])
         try:
             hr = enum_fn(
                 self._di,
@@ -408,7 +423,7 @@ class DirectInput8:
             ctypes.POINTER(ctypes.c_void_p),
             ctypes.c_void_p,
         )
-        create_fn = CREATE_FN(vtbl[3])
+        create_fn = CREATE_FN(vtbl[VT_DI8_CREATEDEVICE])
         hr = create_fn(self._di, ctypes.byref(guid),
                        ctypes.byref(device_ptr), None)
         if hr != 0:
@@ -420,13 +435,13 @@ class DirectInput8:
             device_ptr, ctypes.POINTER(ctypes.c_void_p)).contents
         dev_vt = ctypes.cast(dev_vtbl, ctypes.POINTER(ctypes.c_void_p))
 
-        # SetDataFormat — vtable index 10. c_dfDIJoystick2 is built in
-        # ctypes (the symbol is not exported from dinput8.dll).
+        # SetDataFormat — vtable 11 (10 is GetDeviceData).
         try:
             fmt = c_dfDIJoystick2()
+            log(f"[dinput] SetDataFormat {format_header_summary(fmt)}")
             SET_DF = ctypes.WINFUNCTYPE(
                 ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)
-            set_df = SET_DF(dev_vt[10])
+            set_df = SET_DF(dev_vt[VT_DEV_SETDATAFORMAT])
             hr = set_df(device_ptr, ctypes.byref(fmt))
             if hr != 0:
                 self._fail_open(
@@ -436,11 +451,10 @@ class DirectInput8:
             self._fail_open(dev, f"SetDataFormat error: {e}")
             return False
 
-        # SetCooperativeLevel — vtable index 13
         SET_CL = ctypes.WINFUNCTYPE(
             ctypes.c_long, ctypes.c_void_p,
             ctypes.c_void_p, ctypes.wintypes.DWORD)
-        set_cl = SET_CL(dev_vt[13])
+        set_cl = SET_CL(dev_vt[VT_DEV_SETCOOPERATIVELEVEL])
         flags = _DISCL_BACKGROUND | _DISCL_NONEXCLUSIVE
         hr = set_cl(device_ptr, self._hwnd, flags)
         if hr != 0:
@@ -448,9 +462,8 @@ class DirectInput8:
                 dev, f"SetCooperativeLevel failed: 0x{hr & 0xFFFFFFFF:08X}")
             return False
 
-        # Acquire — vtable index 7
         ACQUIRE = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p)
-        acquire = ACQUIRE(dev_vt[7])
+        acquire = ACQUIRE(dev_vt[VT_DEV_ACQUIRE])
         acquire(device_ptr)
 
         self._open_devices[dev.guid_instance] = device_ptr
@@ -480,22 +493,19 @@ class DirectInput8:
             device_ptr, ctypes.POINTER(ctypes.c_void_p)).contents
         dev_vt = ctypes.cast(dev_vtbl, ctypes.POINTER(ctypes.c_void_p))
 
-        # Poll — vtable index 8
         POLL = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p)
-        poll_fn = POLL(dev_vt[8])
+        poll_fn = POLL(dev_vt[VT_DEV_POLL])
         poll_fn(device_ptr)
 
-        # GetDeviceState — vtable index 9
         state = _DIJOYSTATE2()
         GET_STATE = ctypes.WINFUNCTYPE(
             ctypes.c_long, ctypes.c_void_p,
             ctypes.wintypes.DWORD, ctypes.c_void_p)
-        get_state = GET_STATE(dev_vt[9])
+        get_state = GET_STATE(dev_vt[VT_DEV_GETDEVICESTATE])
         hr = get_state(device_ptr, ctypes.sizeof(state), ctypes.byref(state))
         if hr != 0:
-            # Try re-acquire (device may have been lost)
             ACQUIRE = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p)
-            acquire = ACQUIRE(dev_vt[7])
+            acquire = ACQUIRE(dev_vt[VT_DEV_ACQUIRE])
             acquire(device_ptr)
             hr = get_state(
                 device_ptr, ctypes.sizeof(state), ctypes.byref(state))
@@ -519,11 +529,10 @@ class DirectInput8:
                     dev_vtbl, ctypes.POINTER(ctypes.c_void_p))
                 UNACQUIRE = ctypes.WINFUNCTYPE(
                     ctypes.c_long, ctypes.c_void_p)
-                UNACQUIRE(dev_vt[8 + 1])(dev_ptr)  # Unacquire = vtable 9... wait
-                # Actually Release = vtable index 2
+                UNACQUIRE(dev_vt[VT_DEV_UNACQUIRE])(dev_ptr)
                 RELEASE = ctypes.WINFUNCTYPE(
                     ctypes.c_ulong, ctypes.c_void_p)
-                RELEASE(dev_vt[2])(dev_ptr)
+                RELEASE(dev_vt[VT_RELEASE])(dev_ptr)
             except Exception:
                 pass
         self._open_devices.clear()
@@ -535,7 +544,7 @@ class DirectInput8:
                 vtbl = ctypes.cast(di_vtbl, ctypes.POINTER(ctypes.c_void_p))
                 RELEASE = ctypes.WINFUNCTYPE(
                     ctypes.c_ulong, ctypes.c_void_p)
-                RELEASE(vtbl[2])(self._di)
+                RELEASE(vtbl[VT_RELEASE])(self._di)
             except Exception:
                 pass
             self._di = ctypes.c_void_p(0)

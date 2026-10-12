@@ -608,14 +608,25 @@ class InputListener:
                         pressed = bool(joy.get_button(bi))
                         key = (ji, bi)
                         was = prev_states.get(key, False)
+                        if pressed == was:
+                            prev_states[key] = pressed
+                            continue
+                        name = ""
+                        try:
+                            name = joy.get_name()
+                        except Exception:
+                            name = f"joy{ji}"
+                        state = "pressed" if pressed else "released"
+                        log(f"[ptt/input] pygame event device={ji} "
+                            f"name={name!r} button={bi} {state}")
                         if pressed and not was:
                             if self._assign_callback is not None:
                                 b = PTTBinding(type=BindingType.JOYSTICK,
                                                joy_id=ji, button_id=bi)
                                 cb = self._assign_callback
                                 self._assign_callback = None
-                                log(f"[ptt/input] pygame captured Joy {ji} "
-                                    f"Btn {bi}")
+                                log(f"[ptt/input] pygame assign device={ji} "
+                                    f"name={name!r} button={bi}")
                                 self.stop()
                                 cb(b)
                                 return
