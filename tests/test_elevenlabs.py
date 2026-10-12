@@ -365,6 +365,72 @@ class TestSynthesizePayload:
         assert "language_code" not in captured["data"]
 
 
+class TestProfileMigration:
+    def test_zeroed_gp_profile_gets_migrated(self, tmp_path):
+        """A saved GP profile with stability=0/similarity=0 (from the
+        old bug) should be migrated to the preset values."""
+        from live_telemetry_evo import settings
+        orig = settings._positions_path
+        settings._positions_path = lambda: tmp_path / "positions.json"
+        try:
+            from live_telemetry_evo.settings import _write
+            _write({"elevenlabs": {
+                "api_key": "",
+                "profiles": [{
+                    "name": "GP",
+                    "voice_id": "L2sW7YcZbRyXB141p5PF",
+                    "model_id": "eleven_multilingual_v2",
+                    "stability": 0.0,
+                    "similarity_boost": 0.0,
+                    "style": 0.0,
+                    "speed": 1.0,
+                    "language": "",
+                }],
+                "active_profile": 0,
+            }})
+            engine = ElevenLabsEngine()
+            engine._load_settings()
+            gp = engine._profiles[0]
+            assert gp.stability == 0.8
+            assert gp.similarity_boost == 0.9
+            assert gp.speed == 0.9
+            assert gp.language == "en"
+        finally:
+            settings._positions_path = orig
+
+    def test_custom_profile_not_migrated(self, tmp_path):
+        """A user's custom profile should not be overwritten."""
+        from live_telemetry_evo import settings
+        orig = settings._positions_path
+        settings._positions_path = lambda: tmp_path / "positions.json"
+        try:
+            from live_telemetry_evo.settings import _write
+            _write({"elevenlabs": {
+                "profiles": [{
+                    "name": "My Voice",
+                    "voice_id": "custom_id_xyz",
+                    "stability": 0.0,
+                    "similarity_boost": 0.0,
+                }],
+            }})
+            engine = ElevenLabsEngine()
+            engine._load_settings()
+            p = engine._profiles[0]
+            assert p.stability == 0.0
+            assert p.similarity_boost == 0.0
+        finally:
+            settings._positions_path = orig
+
+    def test_gp_correct_values_not_overwritten(self):
+        """GP profile with correct values should be left alone."""
+        gp = next(p for p in DEFAULT_PROFILES if p.name == "GP")
+        assert gp.stability == 0.8
+        assert gp.similarity_boost == 0.9
+        assert gp.style == 0.0
+        assert gp.speed == 0.9
+        assert gp.language == "en"
+
+
 class TestNoAPIKeyLogged:
     def test_api_key_not_in_log_calls(self):
         """Ensure API keys are never passed to log()."""

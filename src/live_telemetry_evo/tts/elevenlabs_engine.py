@@ -219,12 +219,34 @@ class ElevenLabsEngine(VoiceEngine):
             profiles_raw = el.get("profiles", [])
             if isinstance(profiles_raw, list) and profiles_raw:
                 self._profiles = [VoiceProfile.from_dict(p) for p in profiles_raw]
+                self._migrate_profiles()
             self._active_profile_idx = int(el.get("active_profile", 0))
             usage_raw = el.get("usage", {})
             if isinstance(usage_raw, dict):
                 self._usage = CharacterUsage.from_dict(usage_raw)
         except Exception:
             pass
+
+    def _migrate_profiles(self) -> None:
+        """Restore preset values for built-in profiles that were saved
+        with zeroed-out fields (bug in earlier versions)."""
+        defaults_by_vid = {p.voice_id: p for p in DEFAULT_PROFILES}
+        changed = False
+        for p in self._profiles:
+            default = defaults_by_vid.get(p.voice_id)
+            if default is None:
+                continue
+            if (p.stability == 0.0 and default.stability != 0.0
+                    and p.similarity_boost == 0.0
+                    and default.similarity_boost != 0.0):
+                p.stability = default.stability
+                p.similarity_boost = default.similarity_boost
+                p.style = default.style
+                p.speed = default.speed
+                p.language = default.language or p.language
+                changed = True
+        if changed:
+            self._save_settings()
 
     def _save_settings(self) -> None:
         """Persist ElevenLabs settings (API key stored but never logged)."""

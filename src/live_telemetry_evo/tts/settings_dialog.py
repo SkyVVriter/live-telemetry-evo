@@ -223,6 +223,7 @@ class TTSSettingsDialog(QDialog):
 
         # Load ElevenLabs state
         self._el_profiles: list = []
+        self._current_edit_row: int = -1
         self._load_elevenlabs_state()
         self._el_group.setVisible(cfg["engine"] == "elevenlabs")
 
@@ -278,7 +279,8 @@ class TTSSettingsDialog(QDialog):
     def _on_profile_selected(self, row: int) -> None:
         if row < 0 or row >= len(self._el_profiles):
             return
-        self._save_current_profile_edits()
+        if self._current_edit_row >= 0:
+            self._save_current_profile_edits()
         p = self._el_profiles[row]
         self._pf_name.setText(p.name)
         self._pf_voice_id.setText(p.voice_id)
@@ -290,9 +292,10 @@ class TTSSettingsDialog(QDialog):
         self._pf_style.setValue(p.style)
         self._pf_speed.setValue(p.speed)
         self._pf_language.setText(p.language)
+        self._current_edit_row = row
 
     def _save_current_profile_edits(self) -> None:
-        row = self._profile_list.currentRow()
+        row = self._current_edit_row
         if row < 0 or row >= len(self._el_profiles):
             return
         p = self._el_profiles[row]
