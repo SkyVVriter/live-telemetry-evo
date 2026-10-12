@@ -223,3 +223,127 @@ class TestFixtures:
         assert csv.exists(), f"missing {csv}"
         lines = csv.read_text().strip().splitlines()
         assert len(lines) > 1, "CSV must have header + data rows"
+
+
+# -- Logger fallback + retry -----------------------------------------------
+
+class TestLoggerFallback:
+    def _reset_logbook(self, logbook, tmp_logs_dir):
+        """Fully reset logbook state and point to a temp dir."""
+        saved = (logbook._fp, logbook._resolved_log_dir,
+                 logbook._last_retry, logbook._primary_logs_dir)
+        if logbook._fp is not None:
+            try:
+                logbook._fp.close()
+            except Exception:
+                pass
+        logbook._fp = None
+        logbook._resolved_log_dir = None
+        logbook._last_retry = 0.0
+        logbook._primary_logs_dir = lambda: tmp_logs_dir
+        return saved
+
+    def _restore_logbook(self, logbook, saved):
+        fp, resolved, retry, primary = saved
+        if logbook._fp is not None and logbook._fp is not fp:
+            try:
+                logbook._fp.close()
+            except Exception:
+                pass
+        logbook._fp = fp
+        logbook._resolved_log_dir = resolved
+        logbook._last_retry = retry
+        logbook._primary_logs_dir = primary
+
+    def test_log_writes_to_file(self, tmp_path):
+        from live_telemetry_evo import logbook
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        saved = self._reset_logbook(logbook, logs)
+        try:
+            logbook.log("test message")
+            log_file = logs / "session.log"
+            assert log_file.exists()
+            assert "test message" in log_file.read_text(encoding="utf-8")
+        finally:
+            self._restore_logbook(logbook, saved)
+
+    def test_fallback_to_localappdata(self, tmp_path):
+        from live_telemetry_evo import logbook
+        fallback_dir = tmp_path / "fallback"
+        fallback_dir.mkdir()
+        saved = self._reset_logbook(logbook, tmp_path / "nonexistent")
+        orig_fallback = logbook._fallback_logs_dir
+
+        def bad_primary():
+            raise PermissionError("UAC blocked")
+
+        logbook._primary_logs_dir = bad_primary
+        logbook._fallback_logs_dir = lambda: fallback_dir
+        try:
+            logbook.log("fallback test")
+            fb_log = fallback_dir / "session.log"
+            assert fb_log.exists()
+            assert "fallback test" in fb_log.read_text(encoding="utf-8")
+        finally:
+            logbook._fallback_logs_dir = orig_fallback
+            self._restore_logbook(logbook, saved)
+
+    def test_read_last_lines(self, tmp_path):
+        from live_telemetry_evo import logbook
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        saved = self._reset_logbook(logbook, logs)
+        try:
+            for i in range(5):
+                logbook.log(f"line {i}")
+            lines = logbook.read_last_lines(3)
+            assert len(lines) == 3
+            assert "line 4" in lines[-1]
+        finally:
+            self._restore_logbook(logbook, saved)
+
+
+# -- Debug report ----------------------------------------------------------
+
+class TestDebugReport:
+    def test_build_report_contains_sections(self):
+        from live_telemetry_evo.debug_dialog import build_report
+        report = build_report()
+        assert "Diagnostic Report" in report
+        assert "Joystick Backends" in report
+        assert "Audio Input Devices" in report
+        assert "Race Worker" in report
+        assert "TTS / STT" in report
+        assert "Log Lines" in report
+
+    def test_mask_secret(self):
+        from live_telemetry_evo.debug_dialog import _mask_secret
+        assert _mask_secret("") == "(empty)"
+        assert _mask_secret("short") == "***"
+        assert _mask_secret("abcdefghijklmnop") == "abcd…mnop"
+        assert "abcdefghijklmnop" not in _mask_secret("abcdefghijklmnop")
+
+    def test_report_masks_keys(self, tmp_path):
+        from live_telemetry_evo import settings
+        orig = settings._positions_path
+        settings._positions_path = lambda: tmp_path / "positions.json"
+        try:
+            from live_telemetry_evo.settings import _write
+            _write({
+                "race_worker": {
+                    "url": "https://test.com",
+                    "app_token": "supersecrettoken123456",
+                    "enabled": True,
+                },
+                "elevenlabs": {"api_key": "xi-longapikey12345678"},
+                "ptt": {"whisper_api_key": "sk-longopenaikey9999"},
+            })
+            from live_telemetry_evo.debug_dialog import build_report
+            report = build_report()
+            assert "supersecrettoken123456" not in report
+            assert "xi-longapikey12345678" not in report
+            assert "sk-longopenaikey9999" not in report
+            assert "supe…3456" in report or "***" in report
+        finally:
+            settings._positions_path = orig

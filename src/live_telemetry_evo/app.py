@@ -1234,6 +1234,9 @@ def run(argv: list[str] | None = None) -> int:
                     dlg = PTTSettingsDialog()
                     if dname == "ptt_diag":
                         QTimer.singleShot(500, dlg._on_diagnostics)
+                elif dname == "debug":
+                    from .debug_dialog import DebugDialog
+                    dlg = DebugDialog()
                 if dlg is not None:
                     dlg.setWindowFlags(
                         dlg.windowFlags() | Qt.WindowStaysOnTopHint)

@@ -206,14 +206,31 @@ jobs:
           taskkill /T /F /PID $proc.Id 2>$null
           Start-Sleep -Seconds 2
 
+      # ---- Phase 6: Debug dialog ----
+      - name: "Screenshot 6: Debug dialog"
+        shell: pwsh
+        run: |
+          . $env:GITHUB_WORKSPACE\Take-SmokeScreenshot.ps1
+          $csv = Join-Path $env:GITHUB_WORKSPACE 'tests\fixtures\sample_replay.csv'
+          $dataDir = Join-Path $env:GITHUB_WORKSPACE 'smoke-logs\run-debug'
+          New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
+          $env:LIVE_TELEMETRY_DATA_DIR = $dataDir
+          $proc = Start-Process -FilePath $env:SMOKE_EXE `
+            -ArgumentList "--source","iracing-replay","--replay-csv",$csv,"--novr","--open-dialog","debug" `
+            -PassThru
+          Start-Sleep -Seconds 10
+          Take-SmokeScreenshot -OutPath (Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots' '06-debug-dialog.png')
+          taskkill /T /F /PID $proc.Id 2>$null
+          Start-Sleep -Seconds 2
+
       # ---- Verify screenshots differ and logs exist ----
       - name: Verify screenshots differ and logs are non-empty
         shell: pwsh
         run: |
           $ssDir = Join-Path $env:GITHUB_WORKSPACE 'smoke-screenshots'
           $pngs = Get-ChildItem -Path $ssDir -Filter '*.png'
-          if ($pngs.Count -lt 6) {
-            throw "Expected at least 6 screenshots, found $($pngs.Count)"
+          if ($pngs.Count -lt 7) {
+            throw "Expected at least 7 screenshots, found $($pngs.Count)"
           }
 
           # Compute hashes and verify they are not ALL identical

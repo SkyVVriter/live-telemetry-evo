@@ -347,6 +347,16 @@ def make_tray(
     ptt_action.triggered.connect(_open_ptt_dialog)
     menu.addAction(ptt_action)
 
+    # ---- Отладка — DebugDialog -------------------------------------------
+    def _open_debug_dialog():
+        from .debug_dialog import DebugDialog
+        dlg = DebugDialog(parent)
+        dlg.exec()
+
+    debug_action = QAction("Отладка\u2026", menu)
+    debug_action.triggered.connect(_open_debug_dialog)
+    menu.addAction(debug_action)
+
     # ---- Release channel selector (prod / test) -------------------------
     channel_menu = menu.addMenu("Release channel")
     channel_group = QActionGroup(channel_menu)
