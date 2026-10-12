@@ -11,6 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - pygame PTT logs every assign/press/release: device index, name, button, `pressed`/`released`.
+- **PTT assign no longer freezes the GUI**: pygame init/pump/`get_button` run on one dedicated worker (no `display.set_mode`). The GUI only receives queued Qt signals. Assign times out after 20 s. A `faulthandler.dump_traceback_later` watchdog dumps all thread stacks to `session.log` if the GUI stalls for more than 3 s.
 
 ## [0.9.0-test.12] - 2026-10-12
 

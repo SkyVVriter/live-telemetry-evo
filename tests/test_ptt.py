@@ -930,47 +930,17 @@ class TestPygamePTTBackend:
         assert result[0]["buttons"] == 128
 
     def test_pygame_assign_captures_high_button(self):
-        from live_telemetry_evo.ptt import input_binding as mod
-
-        class _Joy:
-            def __init__(self):
-                self._buttons = [0] * 128
-
-            def init(self):
-                return None
-
-            def get_name(self):
-                return "MOZA R16 Ultra Base"
-
-            def get_numbuttons(self):
-                return 128
-
-            def get_button(self, i):
-                return bool(self._buttons[i])
-
-        joy = _Joy()
-        fake_pg = MagicMock()
-        fake_pg.joystick.get_count.return_value = 1
-        fake_pg.joystick.Joystick.return_value = joy
+        from live_telemetry_evo.ptt.pygame_joy import FakeJoyBackend
+        backend = FakeJoyBackend()
         captured: list = []
-
-        def _on_bind(b):
-            captured.append(b)
-
-        with patch.object(mod, "list_joysticks",
-                          return_value=[{"index": 0, "name": "R16",
-                                         "buttons": 128,
-                                         "backend": "pygame"}]), \
-             patch.object(mod, "_ensure_pygame", return_value=fake_pg):
-            listener = InputListener()
-            listener.start_assign(_on_bind)
-            time.sleep(0.05)
-            joy._buttons[64] = 1
-            deadline = time.monotonic() + 1.5
-            while not captured and time.monotonic() < deadline:
-                time.sleep(0.02)
-            listener.stop()
-
+        listener = InputListener(joy_backend=backend)
+        listener.start_assign(captured.append)
+        time.sleep(0.03)
+        backend.emit(0, 64, True)
+        deadline = time.monotonic() + 1.0
+        while not captured and time.monotonic() < deadline:
+            time.sleep(0.01)
+        listener.stop()
         assert captured, "pygame backend did not capture a button press"
         assert captured[0].type == BindingType.JOYSTICK
         assert captured[0].joy_id == 0
@@ -978,103 +948,81 @@ class TestPygamePTTBackend:
 
     def test_pygame_logs_press_release_and_assign(self):
         from live_telemetry_evo.ptt import input_binding as mod
-
-        class _Joy:
-            def __init__(self):
-                self._buttons = [0] * 128
-
-            def init(self):
-                return None
-
-            def get_name(self):
-                return "MOZA R16 Ultra Base"
-
-            def get_numbuttons(self):
-                return 128
-
-            def get_button(self, i):
-                return bool(self._buttons[i])
-
-        joy = _Joy()
-        fake_pg = MagicMock()
-        fake_pg.joystick.get_count.return_value = 1
-        fake_pg.joystick.Joystick.return_value = joy
+        from live_telemetry_evo.ptt.pygame_joy import FakeJoyBackend
+        backend = FakeJoyBackend()
         logs: list[str] = []
-
-        def _on_bind(_b):
-            return None
-
-        with patch.object(mod, "list_joysticks",
-                          return_value=[{"index": 0, "name": "R16",
-                                         "buttons": 128,
-                                         "backend": "pygame"}]), \
-             patch.object(mod, "_ensure_pygame", return_value=fake_pg), \
-             patch.object(mod, "log", side_effect=lambda m: logs.append(m)):
-            listener = InputListener()
-            listener.start_assign(_on_bind)
+        with patch.object(mod, "log", side_effect=lambda m: logs.append(m)):
+            listener = InputListener(joy_backend=backend)
+            listener.start_assign(lambda _b: None)
+            time.sleep(0.03)
+            backend.emit(0, 3, True)
             time.sleep(0.05)
-            joy._buttons[3] = 1
-            deadline = time.monotonic() + 1.5
-            while not any("assign" in x for x in logs) and time.monotonic() < deadline:
-                time.sleep(0.02)
             listener.stop()
-
         joined = "\n".join(logs)
         assert "pygame event device=0 name='MOZA R16 Ultra Base' button=3 pressed" in joined
         assert "pygame assign device=0 name='MOZA R16 Ultra Base' button=3" in joined
 
     def test_pygame_press_release_honors_binding(self):
         from live_telemetry_evo.ptt import input_binding as mod
-
-        class _Joy:
-            def __init__(self):
-                self._buttons = [0] * 128
-
-            def init(self):
-                return None
-
-            def get_name(self):
-                return "R16"
-
-            def get_numbuttons(self):
-                return 128
-
-            def get_button(self, i):
-                return bool(self._buttons[i])
-
-        joy = _Joy()
-        fake_pg = MagicMock()
-        fake_pg.joystick.get_count.return_value = 1
-        fake_pg.joystick.Joystick.return_value = joy
+        from live_telemetry_evo.ptt.pygame_joy import FakeJoyBackend
+        backend = FakeJoyBackend()
         events: list[str] = []
         logs: list[str] = []
-
-        with patch.object(mod, "list_joysticks",
-                          return_value=[{"index": 0, "name": "R16",
-                                         "buttons": 128,
-                                         "backend": "pygame"}]), \
-             patch.object(mod, "_ensure_pygame", return_value=fake_pg), \
-             patch.object(mod, "log", side_effect=lambda m: logs.append(m)):
-            listener = InputListener()
+        with patch.object(mod, "log", side_effect=lambda m: logs.append(m)):
+            listener = InputListener(joy_backend=backend)
             listener.set_binding(PTTBinding(
                 type=BindingType.JOYSTICK, joy_id=0, button_id=7))
             listener.start(lambda: events.append("press"),
                            lambda: events.append("release"))
+            time.sleep(0.03)
+            backend.emit(0, 7, True, name="R16")
+            backend.emit(0, 7, False, name="R16")
             time.sleep(0.05)
-            joy._buttons[7] = 1
-            deadline = time.monotonic() + 1.5
-            while "press" not in events and time.monotonic() < deadline:
-                time.sleep(0.02)
-            joy._buttons[7] = 0
-            deadline = time.monotonic() + 1.5
-            while "release" not in events and time.monotonic() < deadline:
-                time.sleep(0.02)
             listener.stop()
-
         assert events == ["press", "release"]
         joined = "\n".join(logs)
         assert "button=7 pressed" in joined
         assert "button=7 released" in joined
+
+    def test_assign_press_from_worker_does_not_block_gui(self):
+        """Worker-thread press must not stall the caller (GUI) thread.
+
+        A 2s join / pygame-on-GUI-thread freeze would fail this.
+        """
+        from live_telemetry_evo.ptt.pygame_joy import FakeJoyBackend
+        backend = FakeJoyBackend()
+        captured: list = []
+        delivered = threading.Event()
+
+        def on_capture(binding):
+            captured.append((threading.current_thread().name, binding))
+            delivered.set()
+
+        listener = InputListener(joy_backend=backend)
+        listener.start_assign(on_capture, timeout_s=5)
+
+        def _emit():
+            time.sleep(0.03)
+            backend.emit(0, 5, True)
+
+        worker = threading.Thread(target=_emit, name="fake-joy-worker")
+        worker.start()
+
+        t0 = time.monotonic()
+        gui_ticks = 0
+        while time.monotonic() - t0 < 0.8:
+            gui_ticks += 1
+            if delivered.is_set() and gui_ticks >= 8:
+                break
+            time.sleep(0.01)
+        worker.join(0.5)
+        listener.stop()
+        elapsed = time.monotonic() - t0
+
+        assert captured, "assign callback never ran"
+        assert captured[0][1].button_id == 5
+        assert gui_ticks >= 8, f"GUI only ticked {gui_ticks} times"
+        assert elapsed < 0.9, f"GUI stalled for {elapsed:.2f}s"
 
     def test_stop_from_joy_thread_does_not_deadlock(self):
         listener = InputListener()
@@ -1083,6 +1031,27 @@ class TestPygamePTTBackend:
         listener.stop()
         assert time.monotonic() - t0 < 0.5
         assert listener._joy_thread is None
+
+    def test_no_pygame_display_set_mode(self):
+        src = Path(__file__).parent.parent / "src" / "live_telemetry_evo" / "ptt"
+        for name in ("pygame_joy.py", "input_binding.py"):
+            text = (src / name).read_text(encoding="utf-8")
+            assert "display.set_mode(" not in text
+            assert "display.init(" not in text
+
+
+class TestGuiWatchdog:
+    def test_dump_traceback_later_is_used(self):
+        src = (Path(__file__).parent.parent / "src" / "live_telemetry_evo"
+               / "gui_watchdog.py")
+        text = src.read_text(encoding="utf-8")
+        assert "dump_traceback_later" in text
+        assert "STALL_S = 3.0" in text
+
+    def test_app_starts_watchdog(self):
+        src = Path(__file__).parent.parent / "src" / "live_telemetry_evo" / "app.py"
+        text = src.read_text(encoding="utf-8")
+        assert "start_gui_watchdog" in text
 
 
 class TestDInputBackend:

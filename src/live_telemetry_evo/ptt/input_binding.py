@@ -27,6 +27,7 @@ from enum import Enum
 from typing import Callable, Optional
 
 from ..logbook import log
+from .pygame_joy import FakeJoyBackend, get_pygame_worker  # noqa: F401
 
 
 class BindingType(Enum):
@@ -268,35 +269,13 @@ def _list_winmm() -> list[dict]:
             for j in joys]
 
 
-def _ensure_pygame():
-    """Init pygame joystick, allowing background events without a flashy window."""
-    import os
-    os.environ.setdefault("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1")
-    import pygame
-    pygame.init()
-    try:
-        pygame.display.init()
-        flags = getattr(pygame, "HIDDEN", 0) | getattr(pygame, "NOFRAME", 0)
-        if flags:
-            pygame.display.set_mode((1, 1), flags)
-    except Exception as e:
-        log(f"[ptt/input] pygame display init skipped: {e}")
-    pygame.joystick.init()
-    return pygame
-
-
 def _list_pygame() -> list[dict]:
+    """Read the pygame worker cache. Never calls pygame on this thread."""
     try:
-        pygame = _ensure_pygame()
-        result = []
-        for i in range(pygame.joystick.get_count()):
-            j = pygame.joystick.Joystick(i)
-            j.init()
-            result.append({"index": i, "name": j.get_name(),
-                           "buttons": j.get_numbuttons(),
-                           "backend": "pygame"})
-        return result
-    except (ImportError, Exception) as e:
+        worker = get_pygame_worker()
+        worker.ensure_started()
+        return worker.cached_devices()
+    except Exception as e:
         log(f"[ptt/input] pygame list failed: {e}")
         return []
 
@@ -331,15 +310,14 @@ def run_diagnostics() -> str:
     lines.append("")
     lines.append("--- pygame (SDL2) ---")
     try:
-        pygame = _ensure_pygame()
-        n = pygame.joystick.get_count()
-        if n:
-            for i in range(n):
-                j = pygame.joystick.Joystick(i)
-                j.init()
-                lines.append(f"  [{i}] {j.get_name()} ({j.get_numbuttons()} btn)")
+        worker = get_pygame_worker()
+        worker.ensure_started()
+        devs = worker.cached_devices()
+        if devs:
+            for d in devs:
+                lines.append(f"  [{d['index']}] {d['name']} ({d['buttons']} btn)")
         else:
-            lines.append("  (no devices)")
+            lines.append("  (worker running; no snapshot yet)")
     except (ImportError, Exception) as e:
         lines.append(f"  ERROR: {e}")
 
@@ -351,10 +329,19 @@ def run_diagnostics() -> str:
 # InputListener — keyboard + joystick
 # ---------------------------------------------------------------------------
 
-class InputListener:
-    """Listens for keyboard and joystick input for PTT activation."""
+ASSIGN_TIMEOUT_S = 20.0
+_STOP_JOIN_S = 0.25
 
-    def __init__(self) -> None:
+
+class InputListener:
+    """Listens for keyboard and joystick input for PTT activation.
+
+    Joystick backends run on a worker thread. The assign callback must
+    be non-blocking (queued Qt signal). ``stop()`` never joins longer
+    than ``_STOP_JOIN_S`` so the GUI thread cannot freeze.
+    """
+
+    def __init__(self, joy_backend=None) -> None:
         self._binding: Optional[PTTBinding] = None
         self._on_press: Optional[Callable[[], None]] = None
         self._on_release: Optional[Callable[[], None]] = None
@@ -363,6 +350,9 @@ class InputListener:
         self._joy_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._pressed = False
+        self._joy_backend = joy_backend
+        self._assign_timer: Optional[threading.Timer] = None
+        self._subscribed_pygame = False
 
     @property
     def binding(self) -> Optional[PTTBinding]:
@@ -381,23 +371,64 @@ class InputListener:
 
     def stop(self) -> None:
         self._stop.set()
+        self._cancel_assign_timer()
+        self._unsubscribe_pygame()
         self._stop_keyboard_listener()
         t = self._joy_thread
         if t is not None and t is not threading.current_thread():
-            t.join(timeout=2.0)
+            t.join(timeout=_STOP_JOIN_S)
             self._joy_thread = None
         elif t is threading.current_thread():
             self._joy_thread = None
 
-    def start_assign(self, callback: Callable[[PTTBinding], None]) -> None:
+    def start_assign(self, callback: Callable[[PTTBinding], None],
+                     timeout_s: float = ASSIGN_TIMEOUT_S) -> None:
         self._assign_callback = callback
         self._stop.clear()
+        self._cancel_assign_timer()
+        if timeout_s and timeout_s > 0:
+            self._assign_timer = threading.Timer(
+                timeout_s, self._on_assign_timeout)
+            self._assign_timer.daemon = True
+            self._assign_timer.start()
         self._start_keyboard_listener()
         self._start_joystick_listener()
 
     def stop_assign(self) -> None:
         self._assign_callback = None
         self.stop()
+
+    def _cancel_assign_timer(self) -> None:
+        t = self._assign_timer
+        self._assign_timer = None
+        if t is not None:
+            t.cancel()
+
+    def _on_assign_timeout(self) -> None:
+        if self._assign_callback is None:
+            return
+        log(f"[ptt/input] assign timed out after {ASSIGN_TIMEOUT_S:.0f}s")
+        self._assign_callback = None
+        self._stop.set()
+
+    def _deliver_assign(self, binding: PTTBinding) -> None:
+        """Hand the binding to the caller without joining any thread."""
+        cb = self._assign_callback
+        self._assign_callback = None
+        self._cancel_assign_timer()
+        self._stop.set()
+        if cb is not None:
+            cb(binding)
+
+    def _unsubscribe_pygame(self) -> None:
+        if not self._subscribed_pygame:
+            return
+        self._subscribed_pygame = False
+        backend = self._joy_backend or get_pygame_worker()
+        try:
+            backend.unsubscribe(self._on_joy_edge)
+        except Exception:
+            pass
 
     # ---- keyboard (pynput) ----
 
@@ -429,11 +460,8 @@ class InputListener:
         key_name = key_name.replace("Key.", "")
 
         if self._assign_callback is not None:
-            binding = PTTBinding(type=BindingType.KEYBOARD, key_name=key_name)
-            cb = self._assign_callback
-            self._assign_callback = None
-            self.stop()
-            cb(binding)
+            self._deliver_assign(PTTBinding(
+                type=BindingType.KEYBOARD, key_name=key_name))
             return
 
         if (self._binding and self._binding.type == BindingType.KEYBOARD
@@ -467,6 +495,9 @@ class InputListener:
         self._joy_thread.start()
 
     def _joystick_loop(self) -> None:
+        if self._joy_backend is not None:
+            self._pygame_poll_loop()
+            return
         joys = list_joysticks()
         if not joys:
             return
@@ -507,12 +538,9 @@ class InputListener:
                 for btn_id, (now, was) in enumerate(zip(buttons, old)):
                     if now and not was:
                         if self._assign_callback is not None:
-                            b = PTTBinding(type=BindingType.JOYSTICK,
-                                           joy_id=idx, button_id=btn_id)
-                            cb = self._assign_callback
-                            self._assign_callback = None
-                            self.stop()
-                            cb(b)
+                            self._deliver_assign(PTTBinding(
+                                type=BindingType.JOYSTICK,
+                                joy_id=idx, button_id=btn_id))
                             return
                         if (self._binding
                                 and self._binding.type == BindingType.JOYSTICK
@@ -551,13 +579,9 @@ class InputListener:
                         was_pressed = bool(prev & mask)
                         if now_pressed and not was_pressed:
                             if self._assign_callback is not None:
-                                b = PTTBinding(type=BindingType.JOYSTICK,
-                                               joy_id=joy.index,
-                                               button_id=btn)
-                                cb = self._assign_callback
-                                self._assign_callback = None
-                                self.stop()
-                                cb(b)
+                                self._deliver_assign(PTTBinding(
+                                    type=BindingType.JOYSTICK,
+                                    joy_id=joy.index, button_id=btn))
                                 return
                             if (self._binding
                                     and self._binding.type == BindingType.JOYSTICK
@@ -578,76 +602,45 @@ class InputListener:
             self._stop.wait(0.01)
 
     def _pygame_poll_loop(self):
+        backend = self._joy_backend or get_pygame_worker()
         try:
-            pygame = _ensure_pygame()
-        except (ImportError, Exception) as e:
+            backend.ensure_started()
+            backend.subscribe(self._on_joy_edge)
+            self._subscribed_pygame = True
+        except Exception as e:
             log(f"[ptt/input] pygame poll init failed: {e}")
             return
-        sticks = []
-        try:
-            for i in range(pygame.joystick.get_count()):
-                joy = pygame.joystick.Joystick(i)
-                joy.init()
-                sticks.append(joy)
-        except Exception as e:
-            log(f"[ptt/input] pygame joystick init failed: {e}")
-            return
-        if not sticks:
-            log("[ptt/input] pygame poll: 0 devices")
-            return
-        log(f"[ptt/input] pygame poll: {len(sticks)} device(s), "
-            f"{sticks[0].get_numbuttons()} btn on [0]")
-        prev_states: dict[tuple[int, int], bool] = {}
-        err_logged = False
+        log("[ptt/input] pygame poll: subscribed to dedicated worker")
         while not self._stop.is_set():
-            try:
-                pygame.event.pump()
-                for ji, joy in enumerate(sticks):
-                    nbtn = joy.get_numbuttons()
-                    for bi in range(nbtn):
-                        pressed = bool(joy.get_button(bi))
-                        key = (ji, bi)
-                        was = prev_states.get(key, False)
-                        if pressed == was:
-                            prev_states[key] = pressed
-                            continue
-                        name = ""
-                        try:
-                            name = joy.get_name()
-                        except Exception:
-                            name = f"joy{ji}"
-                        state = "pressed" if pressed else "released"
-                        log(f"[ptt/input] pygame event device={ji} "
-                            f"name={name!r} button={bi} {state}")
-                        if pressed and not was:
-                            if self._assign_callback is not None:
-                                b = PTTBinding(type=BindingType.JOYSTICK,
-                                               joy_id=ji, button_id=bi)
-                                cb = self._assign_callback
-                                self._assign_callback = None
-                                log(f"[ptt/input] pygame assign device={ji} "
-                                    f"name={name!r} button={bi}")
-                                self.stop()
-                                cb(b)
-                                return
-                            if (self._binding
-                                    and self._binding.type == BindingType.JOYSTICK
-                                    and self._binding.joy_id == ji
-                                    and self._binding.button_id == bi):
-                                self._pressed = True
-                                if self._on_press:
-                                    self._on_press()
-                        elif not pressed and was:
-                            if (self._binding
-                                    and self._binding.type == BindingType.JOYSTICK
-                                    and self._binding.joy_id == ji
-                                    and self._binding.button_id == bi):
-                                self._pressed = False
-                                if self._on_release:
-                                    self._on_release()
-                        prev_states[key] = pressed
-            except Exception as e:
-                if not err_logged:
-                    log(f"[ptt/input] pygame poll error: {e}")
-                    err_logged = True
-            self._stop.wait(0.02)
+            self._stop.wait(0.05)
+        self._unsubscribe_pygame()
+
+    def _on_joy_edge(self, device: int, name: str, button: int,
+                     pressed: bool) -> None:
+        """Called on the pygame worker thread. Must not block or join."""
+        state = "pressed" if pressed else "released"
+        log(f"[ptt/input] pygame event device={device} "
+            f"name={name!r} button={button} {state}")
+        if pressed:
+            if self._assign_callback is not None:
+                log(f"[ptt/input] pygame assign device={device} "
+                    f"name={name!r} button={button}")
+                self._deliver_assign(PTTBinding(
+                    type=BindingType.JOYSTICK,
+                    joy_id=device, button_id=button))
+                return
+            if (self._binding
+                    and self._binding.type == BindingType.JOYSTICK
+                    and self._binding.joy_id == device
+                    and self._binding.button_id == button):
+                self._pressed = True
+                if self._on_press:
+                    self._on_press()
+        else:
+            if (self._binding
+                    and self._binding.type == BindingType.JOYSTICK
+                    and self._binding.joy_id == device
+                    and self._binding.button_id == button):
+                self._pressed = False
+                if self._on_release:
+                    self._on_release()

@@ -5,7 +5,7 @@ max duration.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal, QObject
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -22,11 +22,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from PySide6.QtCore import Signal, QObject
-
 from ..logbook import log
 from ..settings import load_ptt_settings, save_ptt_settings
-from .input_binding import PTTBinding, list_joysticks, run_diagnostics
+from .input_binding import (
+    ASSIGN_TIMEOUT_S, PTTBinding, list_joysticks, run_diagnostics,
+)
+from .pygame_joy import get_pygame_worker
 from .recorder import AudioRecorder, list_input_devices, find_device_by_name
 from .stt import list_stt_engines
 
@@ -260,7 +261,17 @@ class PTTSettingsDialog(QDialog):
         self._assign_listener = None
         self._binding_bridge = _BindingSignalBridge(self)
         self._binding_bridge.binding_captured.connect(
-            self._on_binding_captured_gui)
+            self._on_binding_captured_gui,
+            Qt.ConnectionType.QueuedConnection)
+        self._assign_timeout = QTimer(self)
+        self._assign_timeout.setSingleShot(True)
+        self._assign_timeout.setInterval(int(ASSIGN_TIMEOUT_S * 1000))
+        self._assign_timeout.timeout.connect(self._on_assign_timeout)
+        try:
+            get_pygame_worker().ensure_started()
+        except Exception:
+            pass
+        QTimer.singleShot(300, self._refresh_joystick_info)
 
     def _on_test_toggle(self, checked: bool) -> None:
         if checked:
@@ -347,12 +358,16 @@ class PTTSettingsDialog(QDialog):
         from .input_binding import InputListener
         self._assign_listener = InputListener()
         self._assign_listener.start_assign(self._on_binding_captured_thread)
+        self._assign_timeout.start()
 
     def _on_binding_captured_thread(self, binding: PTTBinding) -> None:
+        # Worker thread: queued signal only — never touch widgets or join.
         # pylint: disable-next=no-member
         self._binding_bridge.binding_captured.emit(binding)
 
     def _on_binding_captured_gui(self, binding) -> None:
+        self._assign_timeout.stop()
+        self._stop_assign_listener()
         self._assigning = False
         self._binding_data = binding.to_dict()
         self._bind_label.setText(binding.display_name)
@@ -361,10 +376,22 @@ class PTTSettingsDialog(QDialog):
         self._clear_btn.setVisible(True)
         self._cancel_assign_btn.setVisible(False)
 
+    def _stop_assign_listener(self) -> None:
+        lis = self._assign_listener
+        self._assign_listener = None
+        if lis is not None:
+            lis.stop_assign()
+
+    def _on_assign_timeout(self) -> None:
+        if not self._assigning:
+            return
+        log("[ptt/dialog] assign timed out")
+        self._on_cancel_assign()
+        self._bind_label.setText("Назначение: время вышло")
+
     def _on_cancel_assign(self) -> None:
-        if self._assign_listener is not None:
-            self._assign_listener.stop_assign()
-            self._assign_listener = None
+        self._assign_timeout.stop()
+        self._stop_assign_listener()
         self._assigning = False
         if self._binding_data:
             try:
@@ -411,9 +438,8 @@ class PTTSettingsDialog(QDialog):
         self.accept()
 
     def closeEvent(self, event) -> None:
-        if self._assign_listener is not None:
-            self._assign_listener.stop_assign()
-            self._assign_listener = None
+        self._assign_timeout.stop()
+        self._stop_assign_listener()
         if self._recorder.is_recording:
             self._recorder.stop()
             self._level_timer.stop()

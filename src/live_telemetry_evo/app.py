@@ -579,6 +579,11 @@ def run(argv: list[str] | None = None) -> int:
     log_action("session started")
     # pylint: disable-next=no-member
     app.aboutToQuit.connect(lambda: log_action("session ended"))
+    try:
+        from .gui_watchdog import start_gui_watchdog
+        start_gui_watchdog(app)
+    except Exception as e:
+        log(f"[watchdog] not started: {e}")
 
     screen = app.primaryScreen()
     geom = screen.availableGeometry()
