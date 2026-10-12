@@ -80,4 +80,6 @@ jobs:
           body_path: release_notes.md
           generate_release_notes: true
           fail_on_unmatched_files: true
+          allowUpdates: true
+          overwrite_files: true
           prerelease: ${{ contains(github.ref_name, '-test') }}
