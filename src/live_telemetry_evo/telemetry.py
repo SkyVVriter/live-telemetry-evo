@@ -260,6 +260,8 @@ class IRacingData:
     session_flags: int = 0
     player_position: int = 0
     player_class_position: int = 0
+    session_state: int = 0
+    laps_completed: int = 0
     cars: list[CarPosition] = field(default_factory=list)
     # Session info parsed from YAML
     track_id_iracing: int = 0

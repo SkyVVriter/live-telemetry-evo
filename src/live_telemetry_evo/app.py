@@ -16,8 +16,8 @@ from .layout import ScreenLayout, compute_layout, pick_resolution
 from .logbook import log, log_action
 from .logger import CsvLogger
 from .race_engineer.balance import BalanceDetector
-from .race_engineer.corner_map import TrackProfile
 from .race_engineer.incidents import IncidentTracker, IncidentSeverity
+from .race_engineer.lap_reporter import LapReporter
 from .race_engineer.lap_summary import LapSummaryBuilder
 from .race_engineer.proximity import FasterCarBehindDetector
 from .race_worker_client import (
@@ -1049,10 +1049,10 @@ def run(argv: list[str] | None = None) -> int:
     _incident_tracker = IncidentTracker()
     _proximity_detector = FasterCarBehindDetector()
     _lap_builder = LapSummaryBuilder(_balance_detector, _incident_tracker)
+    _lap_reporter = LapReporter(_lap_builder)
     _rw_client: RaceWorkerClient | None = None
     _session_sync: SessionSync | None = None
     _speech_scheduler: SpeechScheduler | None = None
-    _prev_lap_number = [0]
 
     def _init_race_engineer(source_name: str) -> None:
         """Spin up race-worker + TTS when the source is iRacing.
@@ -1070,7 +1070,12 @@ def run(argv: list[str] | None = None) -> int:
                                       token=rw_cfg["app_token"])
             nonlocal _rw_client, _session_sync
             _rw_client = client
-            _session_sync = SessionSync(client)
+            _lap_reporter.set_post_lap(client.post_lap)
+            _session_sync = SessionSync(
+                client,
+                on_before_end=_lap_reporter.flush_pending,
+                on_new_session=_lap_reporter.reset_session,
+            )
             log("[overlay] race-worker client started "
                 "(session will be created after iRacing connects)")
 
@@ -1107,53 +1112,14 @@ def run(argv: list[str] | None = None) -> int:
             return
         ir = frame.iracing
         eng = frame.engine
-        inp = frame.inputs
 
+        last_s = (eng.last_lap_time_ms / 1000.0
+                  if eng.last_lap_time_ms > 0 else 0.0)
+        _lap_reporter.note_official_lap(last_s, ir.laps_completed)
         if _session_sync is not None:
             _session_sync.sync(session_payload_from_iracing(ir))
 
-        cur_lap = eng.current_lap
-        if cur_lap > _prev_lap_number[0] and _prev_lap_number[0] > 0:
-            summary = _lap_builder.finish_lap(
-                lap_time=(eng.last_lap_time_ms / 1000.0
-                          if eng.last_lap_time_ms > 0 else 0.0))
-            if _rw_client is not None:
-                _rw_client.post_lap({
-                    "lap_number": summary.lap_number,
-                    "lap_time": round(summary.lap_time, 3),
-                    "position": summary.position,
-                    "incidents_total": summary.incidents_total,
-                    "incidents_this_lap": summary.incidents_this_lap,
-                    "fuel_used": round(summary.fuel_used, 3),
-                    "fuel_remaining": round(summary.fuel_remaining, 3),
-                    "top_speed": round(summary.top_speed, 1),
-                    "dominant_balance": summary.dominant_balance(),
-                    "balance_notes": summary.balance_notes_for_api(),
-                })
-            _lap_builder.new_lap(
-                cur_lap, fuel=eng.fuel_liters,
-                incidents=ir.incident_count,
-                position=ir.player_position,
-                class_position=ir.player_class_position)
-        elif _prev_lap_number[0] == 0:
-            _lap_builder.new_lap(
-                cur_lap, fuel=eng.fuel_liters,
-                incidents=ir.incident_count,
-                position=ir.player_position,
-                class_position=ir.player_class_position)
-        _prev_lap_number[0] = cur_lap
-
-        _lap_builder.add_sample(
-            speed_kmh=eng.speed_kmh,
-            steer_rad=ir.steering_angle_rad,
-            yaw_rate=ir.yaw_rate,
-            brake=inp.brake,
-            throttle=inp.throttle,
-            lap_dist_pct=ir.lap_dist_pct,
-            fuel=eng.fuel_liters,
-            incidents=ir.incident_count,
-            on_pit_road=ir.on_pit_road,
-        )
+        _lap_reporter.on_frame(frame)
 
         proximity_alerts = _proximity_detector.update(
             ir.lap_dist_pct, ir.player_position, ir.cars)
@@ -1320,6 +1286,7 @@ def run(argv: list[str] | None = None) -> int:
         if _speech_scheduler is not None:
             _speech_scheduler.stop()
         if _rw_client is not None:
+            _lap_reporter.flush_pending()
             _rw_client.stop_polling()
             _rw_client.end_session()
 

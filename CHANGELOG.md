@@ -15,6 +15,9 @@ adheres to [Semantic Versioning](https://semver.org/).
 - **PTT assign no longer freezes the GUI**: pygame init/pump/`get_button` run on one dedicated worker (no `display.set_mode`). The GUI only receives queued Qt signals. Assign times out after 20 s. A `faulthandler.dump_traceback_later` watchdog dumps all thread stacks to `session.log` if the GUI stalls for more than 3 s.
 - **Wheel polling backend** setting (`winmm` / `DirectInput` / `pygame` / `off`), default `winmm`. `--self-test` documents that haptic is not initialized.
 - **iRacing SDK is read-only and Garage 61-safe**: `Local\\IRSDKMemMapFileName` is opened with `FILE_MAP_READ` only (never `CreateFileMapping`). The data-valid event is opened with `SYNCHRONIZE` only — `WaitForSingleObject` with a timeout, never `ResetEvent`. pyirsdk `startup()` / `freeze_var_buffer_latest()` are not used (those stole the auto-reset event from other clients). No broadcast messages, no telem start/stop/restart, no `.ibt`, no `app.ini`. Live poll is capped at 60 Hz.
+- **Motegi qualify last lap dropped** (session `9f01bf00e17d`): the final flying lap (`1:53.109`) was never POSTed because SessionSync ended the qualify session before `Lap` incremented. The reporter now flushes `LapLastLapTime` / `LapCompleted` on session transition and when `SessionState` goes checkered/cooldown, then ends the session. Out-laps are flagged `out_lap` instead of `lap_time` 0.0.
+- **Lap fuel/position were empty**: the client sent `fuel_used` / `fuel_remaining` (ignored by race-worker) and `PlayerCarPosition` `-1`/`0`. Laps now send `fuel_level` (`FuelLevel`), `fuel_per_lap` (per-lap delta), and `position` / `class_position` only when `> 0`.
+- **`balance_notes` spam (~700–1000/lap)**: without a track profile every sample was `pct_0.XXX`. Consecutive pct samples are merged into one note per corner/phase with peak magnitude.
 
 ## [0.9.0-test.12] - 2026-10-12
 

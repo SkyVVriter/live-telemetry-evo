@@ -227,6 +227,18 @@ class TestLapSummary:
         assert summary.lap_time == 90.5
         assert summary.top_speed == 250.0
         assert summary.fuel_used == pytest.approx(2.5, abs=0.1)
+        assert summary.out_lap is False
+
+    def test_zero_time_is_out_lap(self):
+        bd = BalanceDetector()
+        it = IncidentTracker()
+        builder = LapSummaryBuilder(bd, it)
+        builder.new_lap(1, fuel=80.0, incidents=0, position=-1)
+        builder.add_sample(80.0, 0.1, 0.1, 0.0, 0.4, 0.1, 79.6, 0,
+                           position=-1)
+        summary = builder.finish_lap(lap_time=0.0)
+        assert summary.out_lap is True
+        assert summary.position == 0
 
     def test_incident_tracking_in_summary(self):
         bd = BalanceDetector()

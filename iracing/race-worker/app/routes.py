@@ -86,6 +86,7 @@ def _row_to_lap(row) -> LapOut:
         tyre_wear_rr=row["tyre_wear_rr"],
         pit_this_lap=bool(row["pit_this_lap"]),
         off_track=bool(row["off_track"]),
+        out_lap=bool(row["out_lap"]) if "out_lap" in row.keys() else False,
         balance_notes=notes,
         created_at=row["created_at"],
     )
@@ -199,15 +200,16 @@ def create_lap(session_id: str, body: LapCreate, _role: Annotated[Role, Depends(
                incidents, incident_limit_dt, incident_limit_dq,
                fuel_level, fuel_per_lap, tyre_compound,
                tyre_wear_fl, tyre_wear_fr, tyre_wear_rl, tyre_wear_rr,
-               pit_this_lap, off_track, balance_notes)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               pit_this_lap, off_track, out_lap, balance_notes)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (session_id, body.lap, body.lap_time, body.position, body.class_position,
              body.gap_ahead, body.car_ahead_num, body.car_ahead_name, body.car_ahead_last_lap,
              body.gap_behind, body.car_behind_num, body.car_behind_name, body.car_behind_last_lap,
              body.incidents, body.incident_limit_dt, body.incident_limit_dq,
              body.fuel_level, body.fuel_per_lap, body.tyre_compound,
              body.tyre_wear_fl, body.tyre_wear_fr, body.tyre_wear_rl, body.tyre_wear_rr,
-             int(body.pit_this_lap), int(body.off_track), balance_json),
+             int(body.pit_this_lap), int(body.off_track), int(body.out_lap),
+             balance_json),
         )
         row = db.execute("SELECT * FROM laps WHERE id=?", (cur.lastrowid,)).fetchone()
     return _row_to_lap(row)

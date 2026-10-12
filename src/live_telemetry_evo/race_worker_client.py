@@ -323,9 +323,16 @@ class SessionSync:
     new one is created.
     """
 
-    def __init__(self, client: RaceWorkerClient) -> None:
+    def __init__(
+        self,
+        client: RaceWorkerClient,
+        on_before_end: Optional[Callable[[], None]] = None,
+        on_new_session: Optional[Callable[[], None]] = None,
+    ) -> None:
         self.client = client
         self._fp: Optional[tuple] = None
+        self._on_before_end = on_before_end
+        self._on_new_session = on_new_session
 
     def sync(self, payload: Optional[dict]) -> Optional[str]:
         if not payload:
@@ -335,9 +342,19 @@ class SessionSync:
             return self.client._session_id
         if self.client._session_id:
             log(f"[race-worker] session changed {self._fp} -> {fp}, recreating")
+            if self._on_before_end is not None:
+                try:
+                    self._on_before_end()
+                except Exception as e:
+                    log(f"[race-worker] on_before_end failed: {e}")
             self.client.end_session()
             self.client._session_id = None
         sid = self.client.create_session(**payload)
         if sid:
             self._fp = fp
+            if self._on_new_session is not None:
+                try:
+                    self._on_new_session()
+                except Exception as e:
+                    log(f"[race-worker] on_new_session failed: {e}")
         return sid

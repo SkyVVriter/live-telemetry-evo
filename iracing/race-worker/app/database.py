@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS laps (
     tyre_wear_rr    REAL,
     pit_this_lap    INTEGER DEFAULT 0,
     off_track       INTEGER DEFAULT 0,
+    out_lap         INTEGER DEFAULT 0,
     balance_notes   TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -98,7 +99,18 @@ def init_db(path: str | None = None) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_SCHEMA)
+    _migrate(conn)
+    conn.commit()
     conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns introduced after the first schema (existing DBs)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(laps)")}
+    if "out_lap" not in cols:
+        conn.execute(
+            "ALTER TABLE laps ADD COLUMN out_lap INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 @contextmanager

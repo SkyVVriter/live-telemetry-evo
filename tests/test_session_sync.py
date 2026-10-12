@@ -145,6 +145,39 @@ class TestSessionSync:
             end.assert_called_once()
             assert create.call_count == 2
 
+    def test_flushes_final_lap_before_ending_session(self):
+        order: list[str] = []
+        client = RaceWorkerClient(base_url="https://host.com", token="tok")
+
+        def before():
+            order.append("flush")
+
+        def after():
+            order.append("reset")
+
+        sync = SessionSync(
+            client, on_before_end=before, on_new_session=after)
+        first = session_payload_from_iracing(IRacingData(
+            track_id_iracing=274, track_name="Motegi", car_name="GT3",
+            session_type="Lone Qualify",
+        ))
+        second = session_payload_from_iracing(IRacingData(
+            track_id_iracing=274, track_name="Motegi", car_name="GT3",
+            session_type="Race",
+        ))
+
+        def end_session():
+            order.append("end")
+            return True
+
+        with patch.object(client, "create_session",
+                          side_effect=["qual", "race"]), \
+             patch.object(client, "end_session", side_effect=end_session):
+            assert sync.sync(first) == "qual"
+            client._session_id = "qual"
+            assert sync.sync(second) == "race"
+        assert order == ["reset", "flush", "end", "reset"]
+
 
 class TestCreateSession422:
     def test_logs_422_body_and_does_not_retry(self):

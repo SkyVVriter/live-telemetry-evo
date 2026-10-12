@@ -153,6 +153,25 @@ class TestLaps:
         assert data["off_track"] is True
         assert len(data["balance_notes"]) == 2
         assert data["balance_notes"][0]["corner"] == "T1"
+        assert data["out_lap"] is False
+
+    def test_create_out_lap(self, client, app_headers):
+        sid = _create_session(client, app_headers).json()["id"]
+        r = client.post(f"/race/sessions/{sid}/laps", json={
+            "lap": 1,
+            "lap_time": None,
+            "out_lap": True,
+            "fuel_level": 80.0,
+            "fuel_per_lap": 0.4,
+            "position": None,
+        }, headers=app_headers)
+        assert r.status_code == 201
+        data = r.json()
+        assert data["out_lap"] is True
+        assert data["lap_time"] is None
+        assert data["fuel_level"] == 80.0
+        assert data["fuel_per_lap"] == 0.4
+        assert data["position"] is None
 
     def test_create_lap_session_not_found(self, client, app_headers):
         r = client.post("/race/sessions/nope/laps", json={"lap": 1}, headers=app_headers)

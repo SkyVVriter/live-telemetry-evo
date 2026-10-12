@@ -101,6 +101,7 @@ class LapCreate(BaseModel):
     tyre_wear_rr: float | None = None
     pit_this_lap: bool = False
     off_track: bool = False
+    out_lap: bool = False
     balance_notes: list[BalanceNote] = Field(default_factory=list)
 
 
@@ -165,6 +166,7 @@ class LapOut(BaseModel):
     tyre_wear_rr: float | None = None
     pit_this_lap: bool = False
     off_track: bool = False
+    out_lap: bool = False
     balance_notes: list[BalanceNote] = Field(default_factory=list)
     created_at: str = ""
 

@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+from live_telemetry_evo.sources.iracing import _sdk_int, _sdk_position
 from live_telemetry_evo.sources.irsdk_readonly import (
     FILE_MAP_READ, FILE_MAP_WRITE, IRACING_MAX_HZ, SYNCHRONIZE,
     cap_iracing_hz, wait_timeout_ms,
@@ -115,6 +116,19 @@ class TestWaitLoop:
         assert ro.waits, "wait path never ran"
         assert all(w >= 16 for w in ro.waits)
         assert len(ro.waits) < 20, f"busy-spun {len(ro.waits)} waits in 80ms"
+
+
+class TestSdkValueHelpers:
+    def test_position_rejects_minus_one(self):
+        assert _sdk_position(-1) == 0
+        assert _sdk_position(0) == 0
+        assert _sdk_position(None) == 0
+        assert _sdk_position(4) == 4
+
+    def test_session_state_and_lap_completed(self):
+        assert _sdk_int(5, 0) == 5
+        assert _sdk_int(None, 0) == 0
+        assert _sdk_int("3", 0) == 3
 
 
 class TestForbidBroadcast:

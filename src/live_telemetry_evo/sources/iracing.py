@@ -20,6 +20,22 @@ from PySide6.QtCore import QObject, QTimer
 
 from ..logbook import log
 from ..telemetry import CarPosition, IRacingData, TelemetryFrame, WHEEL_IDS
+
+
+def _sdk_int(value, default: int = 0) -> int:
+    """Coerce an IRSDK value to int; None / junk → default."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _sdk_position(value) -> int:
+    """PlayerCarPosition / ClassPosition are -1 or 0 when unset."""
+    n = _sdk_int(value, 0)
+    return n if n > 0 else 0
 from .base import TelemetrySource
 from .irsdk_readonly import (
     ReadOnlyIRSDK, attach_pyirsdk, cap_iracing_hz, wait_timeout_ms,
@@ -247,8 +263,10 @@ class IRacingTelemetrySource(TelemetrySource):
         ir_data.incident_count = int(ir["PlayerCarMyIncidentCount"] or 0)
         ir_data.on_pit_road = bool(ir["OnPitRoad"])
         ir_data.session_flags = int(ir["SessionFlags"] or 0)
-        ir_data.player_position = int(ir["PlayerCarPosition"] or 0)
-        ir_data.player_class_position = int(ir["PlayerCarClassPosition"] or 0)
+        ir_data.player_position = _sdk_position(ir["PlayerCarPosition"])
+        ir_data.player_class_position = _sdk_position(ir["PlayerCarClassPosition"])
+        ir_data.session_state = _sdk_int(ir["SessionState"], 0)
+        ir_data.laps_completed = _sdk_int(ir["LapCompleted"], 0)
 
         eng.fuel_liters = float(ir["FuelLevel"] or 0)
         eng.water_temp_c = float(ir["WaterTemp"] or 0)
