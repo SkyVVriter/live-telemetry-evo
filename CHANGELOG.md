@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.5] - 2026-10-12
+
+### Fixed
+- **App quits when closing any settings dialog**: `QApplication.quitOnLastWindowClosed` defaulted to `True`; closing a dialog while the overlay window was hidden caused the app to exit. Fixed with `app.setQuitOnLastWindowClosed(False)` — quit only via tray Exit or Ctrl+Shift+Q.
+- **PTT button assignment silently fails**: `_on_binding_captured` was called from pynput/pygame background threads but updated Qt widgets directly, violating Qt's thread-affinity rules. Fixed with a `QObject` signal bridge that marshals the binding to the GUI thread via a queued connection.
+- **PTT dialog shows only "Default" device**: `sounddevice` (PortAudio) DLLs were not bundled by PyInstaller. Added `sounddevice` and `_sounddevice_data` to hidden imports and collected their native libraries in the spec. Devices are now deduped by name (preferring WASAPI over MME/DirectSound) and persisted by name+hostapi rather than volatile index.
+- **Edge-TTS voice list empty on CI/frozen exe**: `asyncio.get_event_loop()` fails in frozen builds; replaced with `asyncio.new_event_loop()`.
+
+### Added
+- PTT dialog improvements: "Нажмите клавишу или кнопку руля..." prompt during assign, Cancel button + Esc to abort, detected joysticks list for debugging, device refresh button (⟳), hostapi displayed per device.
+- 8 new tests: device dedup, name-based persistence, binding round-trip, `quitOnLastWindowClosed` check.
+
 ## [0.9.0-test.4] - 2026-10-12
 
 ### Fixed

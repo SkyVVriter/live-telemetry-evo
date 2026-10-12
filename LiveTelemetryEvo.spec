@@ -136,13 +136,22 @@ if ICON_PNG.exists():
 # and collect its DLL explicitly so VR works in the bundled .exe.
 OPENVR_BINARIES = collect_dynamic_libs("openvr")
 
+# sounddevice uses _sounddevice_data which ships the PortAudio DLL.
+# Without it, `import sounddevice` raises OSError in the frozen exe
+# and the PTT device list is empty.
+try:
+    SOUNDDEVICE_BINARIES = collect_dynamic_libs("_sounddevice_data")
+except Exception:
+    SOUNDDEVICE_BINARIES = []
+
 
 a = Analysis(
     [str(ENTRYPOINT)],
     pathex=[str(ROOT / "src")],
-    binaries=OPENVR_BINARIES,
+    binaries=OPENVR_BINARIES + SOUNDDEVICE_BINARIES,
     datas=DATAS,
-    hiddenimports=["openvr", "edge_tts", "irsdk"],
+    hiddenimports=["openvr", "edge_tts", "irsdk",
+                   "sounddevice", "_sounddevice_data"],
     hookspath=[],
     runtime_hooks=[],
     excludes=EXCLUDED_MODULES,

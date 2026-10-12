@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 from live_telemetry_evo.ptt.recorder import (
-    AudioRecorder, _pcm_to_wav, list_input_devices, AudioDevice,
+    AudioRecorder, _pcm_to_wav, list_input_devices, find_device_by_name,
+    AudioDevice,
 )
 from live_telemetry_evo.ptt.ptt_controller import (
     PTTController, PTTMode, _generate_beep, _MIN_HOLD_DURATION_S,
@@ -450,3 +451,106 @@ class TestDriverFeedbackEventType:
             pytest.skip("race-worker dependencies not installed")
         finally:
             sys.path.remove(rw_path)
+
+
+# -- Device listing with hostapi dedup + name persistence -------------------
+
+class TestDeviceListDedup:
+    def test_dedup_prefers_wasapi(self):
+        """Devices with the same name but different hostapis should be
+        deduped, preferring WASAPI."""
+        wasapi = AudioDevice(
+            index=0, name="Microphone", max_input_channels=2,
+            default_samplerate=44100, hostapi_name="Windows WASAPI")
+        mme = AudioDevice(
+            index=1, name="Microphone", max_input_channels=2,
+            default_samplerate=44100, hostapi_name="MME")
+        from live_telemetry_evo.ptt import recorder
+        orig = recorder.list_input_devices
+        recorder.list_input_devices = lambda: [wasapi, mme]
+        try:
+            idx = find_device_by_name("Microphone")
+            assert idx == 0
+        finally:
+            recorder.list_input_devices = orig
+
+    def test_find_device_by_name_not_found(self):
+        from live_telemetry_evo.ptt import recorder
+        orig = recorder.list_input_devices
+        recorder.list_input_devices = lambda: []
+        try:
+            assert find_device_by_name("NonExistent") is None
+        finally:
+            recorder.list_input_devices = orig
+
+    def test_audio_device_hostapi_field(self):
+        d = AudioDevice(
+            index=5, name="USB Mic", max_input_channels=1,
+            default_samplerate=48000, hostapi_name="Windows WASAPI")
+        assert d.hostapi_name == "Windows WASAPI"
+        assert d.index == 5
+
+
+class TestPTTSettingsDevicePersistence:
+    def test_device_name_round_trip(self, tmp_path):
+        from live_telemetry_evo import settings
+        orig = settings._positions_path
+        settings._positions_path = lambda: tmp_path / "positions.json"
+        try:
+            settings.save_ptt_settings(
+                device_name="USB Microphone",
+                device_hostapi="Windows WASAPI",
+                device_index=3,
+            )
+            cfg = settings.load_ptt_settings()
+            assert cfg["device_name"] == "USB Microphone"
+            assert cfg["device_hostapi"] == "Windows WASAPI"
+            assert cfg["device_index"] == 3
+        finally:
+            settings._positions_path = orig
+
+    def test_default_device_name_empty(self, tmp_path):
+        from live_telemetry_evo import settings
+        orig = settings._positions_path
+        settings._positions_path = lambda: tmp_path / "positions.json"
+        try:
+            cfg = settings.load_ptt_settings()
+            assert cfg["device_name"] == ""
+            assert cfg["device_hostapi"] == ""
+        finally:
+            settings._positions_path = orig
+
+
+# -- PTT binding signal bridge pattern -------------------------------------
+
+class TestBindingSignalBridge:
+    def test_binding_round_trip(self):
+        """PTTBinding -> to_dict -> from_dict round-trip."""
+        b = PTTBinding(type=BindingType.KEYBOARD, key_name="f5")
+        d = b.to_dict()
+        b2 = PTTBinding.from_dict(d)
+        assert b2.type == BindingType.KEYBOARD
+        assert b2.key_name == "f5"
+        assert b2.display_name == "Key: f5"
+
+    def test_joystick_binding_display(self):
+        b = PTTBinding(type=BindingType.JOYSTICK, joy_id=0, button_id=7)
+        assert b.display_name == "Joy 0 Btn 7"
+        d = b.to_dict()
+        b2 = PTTBinding.from_dict(d)
+        assert b2.type == BindingType.JOYSTICK
+        assert b2.joy_id == 0
+        assert b2.button_id == 7
+
+
+# -- App quitOnLastWindowClosed check ----------------------------------------
+
+class TestQuitOnLastWindowClosed:
+    def test_quit_on_last_window_closed_is_false(self):
+        """app.py must call app.setQuitOnLastWindowClosed(False) so
+        closing dialogs while overlay is hidden doesn't quit."""
+        import ast
+        app_src = Path(__file__).parent.parent / "src" / "live_telemetry_evo" / "app.py"
+        source = app_src.read_text(encoding="utf-8")
+        assert "setQuitOnLastWindowClosed(False)" in source, \
+            "app.py must call setQuitOnLastWindowClosed(False)"

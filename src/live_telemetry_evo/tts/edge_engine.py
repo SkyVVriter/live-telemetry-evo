@@ -123,8 +123,11 @@ class EdgeTTSEngine(VoiceEngine):
         try:
             import asyncio
             import edge_tts
-            voices = asyncio.get_event_loop().run_until_complete(
-                edge_tts.list_voices())
+            loop = asyncio.new_event_loop()
+            try:
+                voices = loop.run_until_complete(edge_tts.list_voices())
+            finally:
+                loop.close()
             return [{"id": v["ShortName"], "name": v["FriendlyName"]}
                     for v in voices]
         except Exception:

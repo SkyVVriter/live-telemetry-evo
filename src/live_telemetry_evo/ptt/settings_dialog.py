@@ -21,11 +21,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from PySide6.QtCore import Signal, QObject
+
 from ..logbook import log
 from ..settings import load_ptt_settings, save_ptt_settings
-from .input_binding import PTTBinding
-from .recorder import AudioRecorder, list_input_devices
+from .input_binding import PTTBinding, list_joysticks
+from .recorder import AudioRecorder, list_input_devices, find_device_by_name
 from .stt import list_stt_engines
+
+
+class _BindingSignalBridge(QObject):
+    """Queued signal bridge: pynput/pygame threads emit here; the GUI
+    thread receives and updates the dialog widgets safely."""
+    binding_captured = Signal(object)
 
 
 _DARK_STYLESHEET = """
@@ -94,18 +102,18 @@ class PTTSettingsDialog(QDialog):
         audio_layout = QFormLayout(audio_group)
         audio_layout.setSpacing(8)
 
+        dev_row = QHBoxLayout()
         self._device_combo = QComboBox()
-        self._devices = list_input_devices()
-        self._device_combo.addItem("(системный по умолчанию)", None)
-        for d in self._devices:
-            label = f"{d.name}" + (" ★" if d.is_default else "")
-            self._device_combo.addItem(label, d.index)
-        if cfg["device_index"] is not None:
-            for i in range(self._device_combo.count()):
-                if self._device_combo.itemData(i) == cfg["device_index"]:
-                    self._device_combo.setCurrentIndex(i)
-                    break
-        audio_layout.addRow("Устройство:", self._device_combo)
+        self._device_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContents)
+        dev_row.addWidget(self._device_combo, 1)
+        refresh_btn = QPushButton("⟳")
+        refresh_btn.setFixedWidth(32)
+        refresh_btn.setToolTip("Обновить список устройств")
+        refresh_btn.clicked.connect(self._refresh_devices)
+        dev_row.addWidget(refresh_btn)
+        audio_layout.addRow("Устройство:", dev_row)
+        self._populate_device_combo(cfg)
 
         self._level_bar = QProgressBar()
         self._level_bar.setRange(0, 100)
@@ -142,11 +150,21 @@ class PTTSettingsDialog(QDialog):
         self._assign_btn = QPushButton("Назначить...")
         self._assign_btn.clicked.connect(self._on_assign)
         bind_btn_layout.addWidget(self._assign_btn)
+        self._cancel_assign_btn = QPushButton("Отмена")
+        self._cancel_assign_btn.setVisible(False)
+        self._cancel_assign_btn.clicked.connect(self._on_cancel_assign)
+        bind_btn_layout.addWidget(self._cancel_assign_btn)
         self._clear_btn = QPushButton("Сбросить")
         self._clear_btn.clicked.connect(self._on_clear_binding)
         bind_btn_layout.addWidget(self._clear_btn)
         bind_btn_layout.addStretch()
         bind_layout.addRow("", bind_btn_layout)
+
+        self._joy_label = QLabel("")
+        self._joy_label.setStyleSheet("color: #8b949e; font-size: 11px;")
+        self._joy_label.setWordWrap(True)
+        self._refresh_joystick_info()
+        bind_layout.addRow("Джойстики:", self._joy_label)
 
         main.addWidget(bind_group)
 
@@ -213,6 +231,10 @@ class PTTSettingsDialog(QDialog):
         self._level_timer.timeout.connect(self._update_level)
         self._binding_data: dict | None = cfg["binding"]
         self._assigning = False
+        self._assign_listener = None
+        self._binding_bridge = _BindingSignalBridge(self)
+        self._binding_bridge.binding_captured.connect(
+            self._on_binding_captured_gui)
 
     def _on_test_toggle(self, checked: bool) -> None:
         if checked:
@@ -232,23 +254,83 @@ class PTTSettingsDialog(QDialog):
     def _update_level(self) -> None:
         self._level_bar.setValue(int(self._recorder.rms_level * 100))
 
+    def _populate_device_combo(self, cfg: dict) -> None:
+        self._device_combo.clear()
+        self._devices = list_input_devices()
+        self._device_combo.addItem("(системный по умолчанию)", None)
+        for d in self._devices:
+            ha = f" [{d.hostapi_name}]" if d.hostapi_name else ""
+            label = f"{d.name}{ha}" + (" ★" if d.is_default else "")
+            self._device_combo.addItem(label, d.index)
+        saved_name = cfg.get("device_name", "")
+        saved_ha = cfg.get("device_hostapi", "")
+        if saved_name:
+            for i, d in enumerate(self._devices, start=1):
+                if d.name == saved_name and (not saved_ha or d.hostapi_name == saved_ha):
+                    self._device_combo.setCurrentIndex(i)
+                    break
+        elif cfg.get("device_index") is not None:
+            for i in range(self._device_combo.count()):
+                if self._device_combo.itemData(i) == cfg["device_index"]:
+                    self._device_combo.setCurrentIndex(i)
+                    break
+
+    def _refresh_devices(self) -> None:
+        cfg = load_ptt_settings()
+        self._populate_device_combo(cfg)
+
+    def _refresh_joystick_info(self) -> None:
+        joys = list_joysticks()
+        if joys:
+            lines = [f"{j['name']} ({j['buttons']} кн.)" for j in joys]
+            self._joy_label.setText("\n".join(lines))
+        else:
+            self._joy_label.setText("не обнаружены")
+
     def _on_assign(self) -> None:
         if self._assigning:
             return
         self._assigning = True
-        self._assign_btn.setText("Нажмите кнопку...")
-        self._assign_btn.setEnabled(False)
+        self._bind_label.setText("Нажмите клавишу или кнопку руля...")
+        self._bind_label.setStyleSheet("color: #f0ad4e; font-weight: bold;")
+        self._assign_btn.setVisible(False)
+        self._clear_btn.setVisible(False)
+        self._cancel_assign_btn.setVisible(True)
 
         from .input_binding import InputListener
         self._assign_listener = InputListener()
-        self._assign_listener.start_assign(self._on_binding_captured)
+        self._assign_listener.start_assign(self._on_binding_captured_thread)
 
-    def _on_binding_captured(self, binding: PTTBinding) -> None:
+    def _on_binding_captured_thread(self, binding: PTTBinding) -> None:
+        # pylint: disable-next=no-member
+        self._binding_bridge.binding_captured.emit(binding)
+
+    def _on_binding_captured_gui(self, binding) -> None:
         self._assigning = False
         self._binding_data = binding.to_dict()
         self._bind_label.setText(binding.display_name)
-        self._assign_btn.setText("Назначить...")
-        self._assign_btn.setEnabled(True)
+        self._bind_label.setStyleSheet("color: #f0f6fc; font-weight: bold;")
+        self._assign_btn.setVisible(True)
+        self._clear_btn.setVisible(True)
+        self._cancel_assign_btn.setVisible(False)
+
+    def _on_cancel_assign(self) -> None:
+        if self._assign_listener is not None:
+            self._assign_listener.stop_assign()
+            self._assign_listener = None
+        self._assigning = False
+        if self._binding_data:
+            try:
+                b = PTTBinding.from_dict(self._binding_data)
+                self._bind_label.setText(b.display_name)
+            except Exception:
+                self._bind_label.setText("Не назначена")
+        else:
+            self._bind_label.setText("Не назначена")
+        self._bind_label.setStyleSheet("color: #f0f6fc; font-weight: bold;")
+        self._assign_btn.setVisible(True)
+        self._clear_btn.setVisible(True)
+        self._cancel_assign_btn.setVisible(False)
 
     def _on_clear_binding(self) -> None:
         self._binding_data = None
@@ -259,11 +341,22 @@ class PTTSettingsDialog(QDialog):
             self._recorder.stop()
             self._level_timer.stop()
 
+        dev_idx = self._device_combo.currentData()
+        dev_name = ""
+        dev_ha = ""
+        combo_idx = self._device_combo.currentIndex() - 1
+        if 0 <= combo_idx < len(self._devices):
+            d = self._devices[combo_idx]
+            dev_name = d.name
+            dev_ha = d.hostapi_name
+
         save_ptt_settings(
             enabled=True,
             mode=self._mode_combo.currentData() or "hold",
             max_duration_s=self._duration_spin.value(),
-            device_index=self._device_combo.currentData(),
+            device_index=dev_idx,
+            device_name=dev_name,
+            device_hostapi=dev_ha,
             stt_engine=self._stt_combo.currentText(),
             whisper_api_key=self._api_key_input.text().strip(),
             binding=self._binding_data,
@@ -271,7 +364,16 @@ class PTTSettingsDialog(QDialog):
         self.accept()
 
     def closeEvent(self, event) -> None:
+        if self._assign_listener is not None:
+            self._assign_listener.stop_assign()
+            self._assign_listener = None
         if self._recorder.is_recording:
             self._recorder.stop()
             self._level_timer.stop()
         super().closeEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if self._assigning and event.key() == Qt.Key.Key_Escape:
+            self._on_cancel_assign()
+            return
+        super().keyPressEvent(event)

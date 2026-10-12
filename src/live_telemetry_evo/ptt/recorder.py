@@ -30,33 +30,74 @@ class AudioDevice:
     max_input_channels: int
     default_samplerate: float
     is_default: bool = False
+    hostapi_name: str = ""
 
 
 def list_input_devices() -> list[AudioDevice]:
-    """Return available audio input devices. Returns an empty list if
-    sounddevice is not installed or PortAudio is unavailable."""
+    """Return available audio input devices, deduped per physical device.
+
+    Prefers WASAPI and MME host APIs (lower latency / broader driver
+    support on Windows). When the same device name appears under
+    multiple host APIs, only the highest-priority entry is kept.
+    Returns an empty list if sounddevice / PortAudio is unavailable.
+    """
     try:
         import sounddevice as sd  # type: ignore[import-untyped]
-    except (ImportError, OSError):
+    except (ImportError, OSError) as e:
+        log(f"[ptt/recorder] sounddevice unavailable: {e}")
         return []
     devices: list[AudioDevice] = []
     try:
         default_input = sd.default.device[0]
     except Exception:
         default_input = -1
+    hostapis: dict[int, str] = {}
     try:
+        for ha in sd.query_hostapis():
+            hostapis[ha["index"]] = ha["name"]
+    except Exception:
+        pass
+    _HOSTAPI_PRIO = {"Windows WASAPI": 0, "MME": 1, "Windows DirectSound": 2}
+    try:
+        raw: list[AudioDevice] = []
         for i, d in enumerate(sd.query_devices()):
             if d["max_input_channels"] > 0:
-                devices.append(AudioDevice(
+                ha_name = hostapis.get(d.get("hostapi", -1), "")
+                raw.append(AudioDevice(
                     index=i,
                     name=d["name"],
                     max_input_channels=d["max_input_channels"],
                     default_samplerate=d["default_samplerate"],
                     is_default=(i == default_input),
+                    hostapi_name=ha_name,
                 ))
-    except Exception:
-        pass
+        seen: dict[str, AudioDevice] = {}
+        for dev in raw:
+            key = dev.name.strip()
+            if key in seen:
+                old_prio = _HOSTAPI_PRIO.get(seen[key].hostapi_name, 99)
+                new_prio = _HOSTAPI_PRIO.get(dev.hostapi_name, 99)
+                if new_prio < old_prio:
+                    seen[key] = dev
+                elif dev.is_default:
+                    seen[key] = dev
+            else:
+                seen[key] = dev
+        devices = list(seen.values())
+    except Exception as e:
+        log(f"[ptt/recorder] device enumeration failed: {e}")
     return devices
+
+
+def find_device_by_name(name: str, hostapi: str = "") -> int | None:
+    """Look up a device index by name (and optional host API). Returns
+    ``None`` if no match is found."""
+    for d in list_input_devices():
+        if d.name == name:
+            if hostapi and d.hostapi_name != hostapi:
+                continue
+            return d.index
+    return None
 
 
 class AudioRecorder:

@@ -335,6 +335,7 @@ def run(argv: list[str] | None = None) -> int:
     # (taskbar grouping, native dialogs) has a sensible app identity.
     app.setOrganizationName("LiveTelemetryEvo")
     app.setApplicationName("Overlay")
+    app.setQuitOnLastWindowClosed(False)
 
     # Marker so the appended action log separates one run from the next.
     log_action("session started")
