@@ -366,6 +366,27 @@ class TestSynthesizePayload:
 
         assert "language_code" not in captured["data"]
 
+    def test_ssml_parsing_enabled_when_break_present(self):
+        engine = ElevenLabsEngine()
+        engine._api_key = "test-key"
+        profile = VoiceProfile("Test", "vid", "model")
+        captured: dict = {}
+
+        def mock_api(method, path, api_key, body=None, **kw):
+            captured["data"] = json.loads(body.decode("utf-8"))
+            return b"\x00\x01" * 20
+
+        with patch("live_telemetry_evo.tts.elevenlabs_engine._api_request",
+                   side_effect=mock_api):
+            engine._synthesize_api("plain", profile)
+        assert "enable_ssml_parsing" not in captured["data"]
+
+        with patch("live_telemetry_evo.tts.elevenlabs_engine._api_request",
+                   side_effect=mock_api):
+            engine._synthesize_api(
+                'turns 2 <break time="0.3s"/> 5', profile)
+        assert captured["data"].get("enable_ssml_parsing") is True
+
 
 class TestProfileMigration:
     def test_zeroed_gp_profile_gets_migrated(self, tmp_path):

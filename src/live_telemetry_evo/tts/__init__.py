@@ -9,6 +9,7 @@ All engine modules are imported eagerly so their ``@register_engine``
 decorators fire and ``list_engines()`` returns the full set.
 """
 from .base import Priority, VoiceEngine
+from .preprocess import SSML_BREAK, preprocess_tts_text
 from .registry import get_engine, list_engines, register_engine
 from .scheduler import SpeechMessage, SpeechScheduler
 
@@ -41,6 +42,8 @@ __all__ = [
     "VoiceEngine",
     "SpeechMessage",
     "SpeechScheduler",
+    "SSML_BREAK",
+    "preprocess_tts_text",
     "get_engine",
     "list_engines",
     "register_engine",

@@ -26,6 +26,7 @@ from typing import Any, Optional
 from ..logbook import log
 from .base import Priority, VoiceEngine
 from .playback import PCM_RATE_HZ, play_audio_file, pcm16_to_wav
+from .preprocess import preprocess_tts_text
 from .registry import register_engine
 
 GP_VOICE_ID = "L2sW7YcZbRyXB141p5PF"
@@ -294,6 +295,7 @@ class ElevenLabsEngine(VoiceEngine):
             pass
 
     def speak(self, text: str, priority: Priority = Priority.NORMAL) -> None:
+        text = preprocess_tts_text(text)
         if not self.api_key:
             log("[tts/elevenlabs] no API key configured — falling back to EdgeTTS")
             self._speak_fallback(text, priority)
@@ -365,6 +367,8 @@ class ElevenLabsEngine(VoiceEngine):
             "model_id": profile.model_id,
             "voice_settings": voice_settings,
         }
+        if "<break" in text:
+            payload["enable_ssml_parsing"] = True
         if profile.language:
             payload["language_code"] = profile.language
         body = json.dumps(payload).encode("utf-8")

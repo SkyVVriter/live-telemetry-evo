@@ -14,6 +14,7 @@ from typing import Callable, Optional
 
 from ..logbook import log
 from .base import Priority, VoiceEngine
+from .preprocess import preprocess_tts_text
 
 
 @dataclass(order=True)
@@ -107,7 +108,10 @@ class SpeechScheduler:
             if msg is not None:
                 self._speaking = True
                 try:
-                    self.engine.speak(msg.text, Priority(-msg.priority))
+                    self.engine.speak(
+                        preprocess_tts_text(msg.text),
+                        Priority(-msg.priority),
+                    )
                 except Exception as e:
                     log(f"[tts/scheduler] speak failed: {e}")
                 self._speaking = False

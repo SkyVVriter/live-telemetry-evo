@@ -15,6 +15,7 @@ from typing import Any, Optional
 from ..logbook import log
 from .base import Priority, VoiceEngine
 from .playback import play_audio_file
+from .preprocess import preprocess_tts_text, wrap_ssml
 from .registry import register_engine
 
 _CACHE_DIR: Optional[Path] = None
@@ -42,6 +43,7 @@ class EdgeTTSEngine(VoiceEngine):
         self._playback_lock = threading.Lock()
 
     def speak(self, text: str, priority: Priority = Priority.NORMAL) -> None:
+        text = wrap_ssml(preprocess_tts_text(text))
         cache_key = hashlib.md5(
             f"{self.voice}:{self.rate}:{self.volume}:{text}".encode()
         ).hexdigest()

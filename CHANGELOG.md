@@ -4,20 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.14] - 2026-10-13
+
+### Fixed
+- **Moza R16 FFB inverted while the overlay is running**: pygame/SDL HIDAPI (and exclusive-style device open) was opening the wheel and sending reports. Wheel polling now never touches FFB: DirectInput uses `DISCL_NONEXCLUSIVE|DISCL_BACKGROUND` only (never exclusive, never effects / autocenter / `DIPROP_FFGAIN`); pygame inits the joystick subsystem only, with `SDL_HINT_JOYSTICK_HIDAPI=0`, `SDL_JOYSTICK_HIDAPI=0`, per-device HIDAPI hints off, and `SDL_HINT_JOYSTICK_RAWINPUT=0`. Default backend is read-only **winmm** (the generic 32-button mapper entry is the R16). No automatic fallback to pygame.
+- **Motegi qualify last lap dropped** (session `9f01bf00e17d`): the final flying lap (`1:53.109`) was never POSTed because SessionSync ended the qualify session before `Lap` incremented. The reporter now flushes `LapLastLapTime` / `LapCompleted` on session transition and when `SessionState` goes checkered/cooldown, then ends the session. Out-laps are flagged `out_lap` instead of `lap_time` 0.0.
+- **Lap fuel/position were empty**: the client sent `fuel_used` / `fuel_remaining` (ignored by race-worker) and `PlayerCarPosition` `-1`/`0`. Laps now send `fuel_level` (`FuelLevel`), `fuel_per_lap` (per-lap delta), and `position` / `class_position` only when `> 0`.
+- **`balance_notes` spam (~700–1000/lap)**: without a track profile every sample was `pct_0.XXX`. Consecutive pct samples are merged into one note per corner/phase with peak magnitude.
+
+### Added
+- **Wheel polling backend** setting (`winmm` / `DirectInput` / `pygame` / `off`), default `winmm`. `--self-test` documents that haptic is not initialized.
+- **iRacing SDK is read-only and Garage 61-safe**: `Local\\IRSDKMemMapFileName` is opened with `FILE_MAP_READ` only (never `CreateFileMapping`). The data-valid event is opened with `SYNCHRONIZE` only — `WaitForSingleObject` with a timeout, never `ResetEvent`. pyirsdk `startup()` / `freeze_var_buffer_latest()` are not used (those stole the auto-reset event from other clients). No broadcast messages, no telem start/stop/restart, no `.ibt`, no `app.ini`. Live poll is capped at 60 Hz.
+- **TTS text preprocessor**: enumerations such as `turns 2, 5 and 6` are split with `<break time="0.3s"/>` between items; lap times like `1:22` are spoken as `one twenty-two`. ElevenLabs enables SSML parsing when a break is present; Edge wraps the phrase in `<speak>`.
+
 ## [0.9.0-test.13] - 2026-10-12
 
 ### Fixed
 - **DirectInput SetDataFormat 0x80070057 (E_INVALIDARG)**: `SetDataFormat` was invoked at vtable index 10 (`GetDeviceData`) instead of 11, and `Poll` at 8 (`Unacquire`) instead of 25. The `DIDATAFORMAT` / `DIOBJECTDATAFORMAT` layout is now locked to the Windows SDK x64 sizes (`dwSize=32`, `dwObjSize=24`, pointer-aligned `rgodf` at offset 24), `dwFlags=DIDF_ABSAXIS`, live `pguid` pointers, `DIDFT_OPTIONAL|DIDFT_ANYINSTANCE` on every object, and `dwOfs < dwDataSize`. Object table matches Wine/SDK `c_dfDIJoystick2` (164 entries).
-- **Moza R16 FFB inverted while the overlay is running**: pygame/SDL HIDAPI (and exclusive-style device open) was opening the wheel and sending reports. Wheel polling now never touches FFB: DirectInput uses `DISCL_NONEXCLUSIVE|DISCL_BACKGROUND` only (never exclusive, never effects / autocenter / `DIPROP_FFGAIN`); pygame inits the joystick subsystem only, with `SDL_HINT_JOYSTICK_HIDAPI=0`, `SDL_JOYSTICK_HIDAPI=0`, per-device HIDAPI hints off, and `SDL_HINT_JOYSTICK_RAWINPUT=0`. Default backend is read-only **winmm** (the generic 32-button mapper entry is the R16). No automatic fallback to pygame.
 
 ### Added
 - pygame PTT logs every assign/press/release: device index, name, button, `pressed`/`released`.
 - **PTT assign no longer freezes the GUI**: pygame init/pump/`get_button` run on one dedicated worker (no `display.set_mode`). The GUI only receives queued Qt signals. Assign times out after 20 s. A `faulthandler.dump_traceback_later` watchdog dumps all thread stacks to `session.log` if the GUI stalls for more than 3 s.
-- **Wheel polling backend** setting (`winmm` / `DirectInput` / `pygame` / `off`), default `winmm`. `--self-test` documents that haptic is not initialized.
-- **iRacing SDK is read-only and Garage 61-safe**: `Local\\IRSDKMemMapFileName` is opened with `FILE_MAP_READ` only (never `CreateFileMapping`). The data-valid event is opened with `SYNCHRONIZE` only — `WaitForSingleObject` with a timeout, never `ResetEvent`. pyirsdk `startup()` / `freeze_var_buffer_latest()` are not used (those stole the auto-reset event from other clients). No broadcast messages, no telem start/stop/restart, no `.ibt`, no `app.ini`. Live poll is capped at 60 Hz.
-- **Motegi qualify last lap dropped** (session `9f01bf00e17d`): the final flying lap (`1:53.109`) was never POSTed because SessionSync ended the qualify session before `Lap` incremented. The reporter now flushes `LapLastLapTime` / `LapCompleted` on session transition and when `SessionState` goes checkered/cooldown, then ends the session. Out-laps are flagged `out_lap` instead of `lap_time` 0.0.
-- **Lap fuel/position were empty**: the client sent `fuel_used` / `fuel_remaining` (ignored by race-worker) and `PlayerCarPosition` `-1`/`0`. Laps now send `fuel_level` (`FuelLevel`), `fuel_per_lap` (per-lap delta), and `position` / `class_position` only when `> 0`.
-- **`balance_notes` spam (~700–1000/lap)**: without a track profile every sample was `pct_0.XXX`. Consecutive pct samples are merged into one note per corner/phase with peak magnitude.
 
 ## [0.9.0-test.12] - 2026-10-12
 
