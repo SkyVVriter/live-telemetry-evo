@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # --- Enums ---
@@ -112,6 +112,19 @@ class EventCreate(BaseModel):
     lap_dist_pct: float | None = None
     corner: str | None = None
     payload: dict[str, Any] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_type_alias(cls, data: Any) -> Any:
+        """Accept LiveTelemetryEvo's ``type`` as an alias for ``event_type``.
+
+        Prefer ``event_type`` when both keys are present. Enum validation on
+        ``event_type`` still applies after the alias is resolved.
+        """
+        if isinstance(data, dict) and "event_type" not in data and "type" in data:
+            data = dict(data)
+            data["event_type"] = data.pop("type")
+        return data
 
 
 class MessageCreate(BaseModel):

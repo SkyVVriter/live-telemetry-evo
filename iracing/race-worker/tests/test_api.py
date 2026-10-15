@@ -178,6 +178,29 @@ class TestLaps:
         assert r.status_code == 404
 
 
+class TestEventCreateModel:
+    def test_type_alias_on_model(self):
+        from app.models import EventCreate, EventType
+
+        body = EventCreate.model_validate({
+            "type": "driver_feedback",
+            "lap": 1,
+            "payload": {"transcript": "box this lap"},
+        })
+        assert body.event_type is EventType.driver_feedback
+        assert body.lap == 1
+        assert body.payload["transcript"] == "box this lap"
+
+    def test_event_type_wins_when_both_present(self):
+        from app.models import EventCreate, EventType
+
+        body = EventCreate.model_validate({
+            "event_type": "spin",
+            "type": "driver_feedback",
+        })
+        assert body.event_type is EventType.spin
+
+
 class TestEvents:
     def test_create_event(self, client, app_headers):
         sid = _create_session(client, app_headers).json()["id"]
@@ -198,6 +221,39 @@ class TestEvents:
         sid = _create_session(client, app_headers).json()["id"]
         r = client.post(f"/race/sessions/{sid}/events", json={
             "event_type": "invalid_type",
+        }, headers=app_headers)
+        assert r.status_code == 422
+
+    def test_create_event_type_alias(self, client, app_headers):
+        """LiveTelemetryEvo posts ``type`` (e.g. PTT driver_feedback)."""
+        sid = _create_session(client, app_headers).json()["id"]
+        r = client.post(f"/race/sessions/{sid}/events", json={
+            "type": "driver_feedback",
+            "message": "how is the balance",
+            "lap": 1,
+            "lap_dist_pct": 0.55,
+            "payload": {"transcript": "how is the balance"},
+        }, headers=app_headers)
+        assert r.status_code == 201
+        data = r.json()
+        assert data["event_type"] == "driver_feedback"
+        assert data["lap"] == 1
+        assert data["payload"]["transcript"] == "how is the balance"
+
+    def test_event_type_preferred_over_type_alias(self, client, app_headers):
+        sid = _create_session(client, app_headers).json()["id"]
+        r = client.post(f"/race/sessions/{sid}/events", json={
+            "event_type": "spin",
+            "type": "driver_feedback",
+            "lap": 2,
+        }, headers=app_headers)
+        assert r.status_code == 201
+        assert r.json()["event_type"] == "spin"
+
+    def test_invalid_type_alias(self, client, app_headers):
+        sid = _create_session(client, app_headers).json()["id"]
+        r = client.post(f"/race/sessions/{sid}/events", json={
+            "type": "not_an_event",
         }, headers=app_headers)
         assert r.status_code == 422
 
