@@ -1249,6 +1249,9 @@ class TestFFBSafePolling:
         assert "dinput_ffb_safe" in text
         assert "rawhid_ffb_safe" in text
         assert "apply_sdl_ffb_safe_hints" in text
+        assert "playback_numpy_free" in text
+        assert "raw_output_stream" in text
+        assert "--selftest-audio" in text
 
     def test_settings_dialog_does_not_start_pygame_by_default(self):
         src = (Path(__file__).parent.parent / "src" / "live_telemetry_evo"

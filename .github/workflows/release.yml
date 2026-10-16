@@ -56,6 +56,47 @@ jobs:
           $exe = Get-ChildItem -Path dist -Filter 'LiveTelemetryEvo-*.exe' | Select-Object -First 1
           if (-not $exe) { throw 'no LiveTelemetryEvo-*.exe in dist/' }
           Write-Host "built $($exe.Name) ($([math]::Round($exe.Length / 1MB, 1)) MB)"
+          echo "RELEASE_EXE=$($exe.FullName)" >> $env:GITHUB_ENV
+
+      - name: Frozen audio playback self-test
+        # Fails the release if the onefile exe still needs numpy for TTS
+        # (sd.play) or cannot import sounddevice.RawOutputStream.
+        shell: pwsh
+        run: |
+          $env:LIVE_TELEMETRY_DATA_DIR = Join-Path $env:GITHUB_WORKSPACE 'release-logs\selftest-audio'
+          New-Item -ItemType Directory -Force -Path $env:LIVE_TELEMETRY_DATA_DIR | Out-Null
+          $proc = Start-Process -FilePath $env:RELEASE_EXE `
+            -ArgumentList "--selftest-audio" `
+            -PassThru
+          $exited = $proc.WaitForExit(30000)
+          if (-not $exited) {
+            Write-Host "selftest-audio timed out after 30s — killing"
+            taskkill /T /F /PID $proc.Id 2>$null
+            throw "selftest-audio timed out"
+          }
+          $logFile = Join-Path $env:LIVE_TELEMETRY_DATA_DIR 'logs' 'session.log'
+          if (Test-Path $logFile) {
+            Get-Content $logFile | ForEach-Object { Write-Host $_ }
+          } else {
+            throw "selftest-audio produced no session.log"
+          }
+          Write-Host "selftest-audio exit code: $($proc.ExitCode)"
+          $text = Get-Content $logFile -Raw
+          if ($text -match 'NumPy must be installed') {
+            throw "frozen playback still requires numpy"
+          }
+          if ($text -notmatch 'sounddevice\.RawOutputStream: OK') {
+            throw "missing sounddevice.RawOutputStream: OK"
+          }
+          if ($text -notmatch 'numpy not required: OK') {
+            throw "missing numpy not required: OK"
+          }
+          if ($text -notmatch 'overall: PASS') {
+            throw "selftest-audio log does not contain 'overall: PASS'"
+          }
+          if ($proc.ExitCode -ne 0) {
+            throw "selftest-audio failed with exit code $($proc.ExitCode)"
+          }
 
       - name: Compute SHA256 checksum
         # Lets users verify their download against the release notes.

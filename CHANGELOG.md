@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.17] - 2026-10-16
+
+### Fixed
+- **TTS output-device selection never worked in the frozen exe**: `sounddevice.play()` requires numpy, which the PyInstaller spec excludes (`NumPy must be installed for play()/rec()/playrec(); falling back to Windows default`). Playback now writes raw int16 through `sounddevice.RawOutputStream` (same style as the PTT `RawInputStream` recorder). If WASAPI rejects the WAV rate (16 kHz beeps vs 48 kHz headset), PCM is resampled to the device native rate and retried; WAV channel count is used first, then the device's channel count. `--selftest-audio` plus a Release/smoke CI step prove the frozen exe imports this path without numpy.
+
 ## [0.9.0-test.16] - 2026-10-16
 
 ### Added

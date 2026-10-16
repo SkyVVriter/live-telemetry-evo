@@ -331,6 +331,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--self-test", action="store_true",
         help="run backend diagnostics and exit with code 0 if all OK")
+    parser.add_argument(
+        "--selftest-audio", action="store_true",
+        help=("prove frozen TTS playback imports sounddevice.RawOutputStream "
+              "without numpy, then exit"))
     vr_group = parser.add_mutually_exclusive_group()
     vr_group.add_argument(
         "--vr", action="store_true",
@@ -449,14 +453,28 @@ def _run_self_test() -> int:
             results["pygame"] = True
             results["pygame_no_haptic"] = True
 
-    # sounddevice + PortAudio loadable
+    # sounddevice + PortAudio loadable; playback uses RawOutputStream (no numpy)
     try:
         import sounddevice as sd  # type: ignore
         _p(f"sounddevice: OK (PortAudio {sd.get_portaudio_version()[1]})")
         results["sounddevice"] = True
+        has_raw = hasattr(sd, "RawOutputStream")
+        _p(f"sounddevice.RawOutputStream: {'OK' if has_raw else 'FAIL missing'}")
+        results["raw_output_stream"] = bool(has_raw)
     except (ImportError, OSError) as e:
         _p(f"sounddevice: FAIL ({e})")
         results["sounddevice"] = False
+        results["raw_output_stream"] = False
+
+    try:
+        from .tts.playback import playback_source_is_numpy_free
+        numpy_free = playback_source_is_numpy_free()
+        _p("tts playback numpy-free RawOutputStream: "
+           + ("OK" if numpy_free else "FAIL"))
+        results["playback_numpy_free"] = numpy_free
+    except Exception as e:
+        _p(f"tts playback numpy-free: FAIL ({e})")
+        results["playback_numpy_free"] = False
 
     if sys.platform == "win32":
         # winmm struct sizes
@@ -631,7 +649,7 @@ def _self_test_race_worker_401(_p) -> bool:
 def run(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
 
-    if args.self_test:
+    if args.self_test or args.selftest_audio:
         import os, threading
         def _self_test_watchdog():
             import time
@@ -639,7 +657,11 @@ def run(argv: list[str] | None = None) -> int:
             print("[self-test] watchdog: forcing exit after 20s")
             os._exit(2)
         threading.Thread(target=_self_test_watchdog, daemon=True).start()
-        rc = _run_self_test()
+        if args.selftest_audio:
+            from .tts.playback import run_selftest_audio
+            rc = run_selftest_audio()
+        else:
+            rc = _run_self_test()
         os._exit(rc)
 
     app = QApplication(sys.argv)
