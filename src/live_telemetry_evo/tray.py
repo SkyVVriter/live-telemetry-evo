@@ -67,6 +67,8 @@ def make_tray(
     vr_placement_shortcut: str | None = None,
     vr_spread_shortcut: str | None = None,
     vr_distance_shortcut: str | None = None,
+    on_ptt_pause: Callable[[], None] | None = None,
+    on_ptt_resume: Callable[[], None] | None = None,
 # PySide6 exposes QAction.triggered / QMenu.aboutToShow /
 # QSystemTrayIcon.activated as bound Signal objects via runtime metaclass
 # magic that pylint can't introspect, so every .connect() in this module
@@ -340,8 +342,12 @@ def make_tray(
     # ---- Радио (PTT) — PTTSettingsDialog --------------------------------
     def _open_ptt_dialog():
         from .ptt.settings_dialog import PTTSettingsDialog
+        if on_ptt_pause is not None:
+            on_ptt_pause()
         dlg = PTTSettingsDialog(parent)
         dlg.exec()
+        if on_ptt_resume is not None:
+            on_ptt_resume()
 
     ptt_action = QAction("Радио (PTT)\u2026", menu)
     ptt_action.triggered.connect(_open_ptt_dialog)
