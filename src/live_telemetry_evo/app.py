@@ -7,7 +7,7 @@ import sys
 import time
 from typing import Callable, Sequence
 
-from PySide6.QtCore import QThread, QTimer, QUrl, Qt
+from PySide6.QtCore import QObject, QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
@@ -39,7 +39,7 @@ from .tray import make_tray
 from .tts import SpeechScheduler, get_engine, Priority as TTSPriority
 from .tts.settings_dialog import load_tts_settings
 from .ptt.ptt_controller import PTTController, PTTMode
-from .ptt.recorder import AudioRecorder
+from .ptt.recorder import recorder_from_ptt_settings
 from .ptt.stt import get_stt_engine
 from .ptt.intents import IntentHandler, DriverContext
 from .updater import UpdateController
@@ -49,6 +49,7 @@ from .widgets.countdown import CountdownView
 from .widgets.detection import DetectionView
 from .widgets.engine_view import EngineView
 from .widgets.inputs_view import InputsView
+from .widgets.ptt_status import PTTStatusView
 from .widgets.wheel_view import WheelView
 from .window import (HOTKEY_CLICK_LABEL, HOTKEY_LOG_LABEL, HOTKEY_QUIT_LABEL,
                      HOTKEY_RESET_LABEL, HOTKEY_SIZE_LABEL,
@@ -146,6 +147,17 @@ def _default_pos(wid: str, layout: ScreenLayout) -> tuple[int, int, int, int]:
     else:
         p = layout.wheels[wid]
     return p.x, p.y, p.w, p.h
+
+
+def _ptt_status_geom(layout: ScreenLayout) -> tuple[int, int, int, int]:
+    """Centered strip just below the engine bar (falls back above it)."""
+    w = max(240, int(360 * layout.multiplier))
+    h = max(28, int(36 * layout.multiplier))
+    x = (layout.screen_w - w) // 2
+    y = layout.engine.y + layout.engine.h + 6
+    if y + h > layout.screen_h - 4:
+        y = max(4, layout.engine.y - h - 6)
+    return x, y, w, h
 
 
 def _apply_layout(
@@ -319,6 +331,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--self-test", action="store_true",
         help="run backend diagnostics and exit with code 0 if all OK")
+    parser.add_argument(
+        "--selftest-audio", action="store_true",
+        help=("prove frozen TTS playback imports sounddevice.RawOutputStream "
+              "without numpy, then exit"))
     vr_group = parser.add_mutually_exclusive_group()
     vr_group.add_argument(
         "--vr", action="store_true",
@@ -437,14 +453,28 @@ def _run_self_test() -> int:
             results["pygame"] = True
             results["pygame_no_haptic"] = True
 
-    # sounddevice + PortAudio loadable
+    # sounddevice + PortAudio loadable; playback uses RawOutputStream (no numpy)
     try:
         import sounddevice as sd  # type: ignore
         _p(f"sounddevice: OK (PortAudio {sd.get_portaudio_version()[1]})")
         results["sounddevice"] = True
+        has_raw = hasattr(sd, "RawOutputStream")
+        _p(f"sounddevice.RawOutputStream: {'OK' if has_raw else 'FAIL missing'}")
+        results["raw_output_stream"] = bool(has_raw)
     except (ImportError, OSError) as e:
         _p(f"sounddevice: FAIL ({e})")
         results["sounddevice"] = False
+        results["raw_output_stream"] = False
+
+    try:
+        from .tts.playback import playback_source_is_numpy_free
+        numpy_free = playback_source_is_numpy_free()
+        _p("tts playback numpy-free RawOutputStream: "
+           + ("OK" if numpy_free else "FAIL"))
+        results["playback_numpy_free"] = numpy_free
+    except Exception as e:
+        _p(f"tts playback numpy-free: FAIL ({e})")
+        results["playback_numpy_free"] = False
 
     if sys.platform == "win32":
         # winmm struct sizes
@@ -511,6 +541,20 @@ def _run_self_test() -> int:
     except Exception as e:
         _p(f"DirectInput FFB-safe flags: FAIL ({e})")
         results["dinput_ffb_safe"] = False
+
+    try:
+        from pathlib import Path as _Path
+        from .ptt.rawhid import rawhid_is_ffb_safe_source
+        rawhid_src = (_Path(__file__).resolve().parent / "ptt" / "rawhid.py"
+                      ).read_text(encoding="utf-8")
+        rawhid_ok = rawhid_is_ffb_safe_source(rawhid_src)
+        _p("rawhid: FFB-safe (Raw Input, no CreateFile/WriteFile/XInput)")
+        results["rawhid_ffb_safe"] = rawhid_ok
+        if not rawhid_ok:
+            _p("rawhid: FAIL source contains HID open/write")
+    except Exception as e:
+        _p(f"rawhid FFB-safe: FAIL ({e})")
+        results["rawhid_ffb_safe"] = False
 
     # GitHub API reachable
     try:
@@ -605,15 +649,25 @@ def _self_test_race_worker_401(_p) -> bool:
 def run(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
 
-    if args.self_test:
+    if args.self_test or args.selftest_audio:
         import os, threading
         def _self_test_watchdog():
             import time
-            time.sleep(20)
-            print("[self-test] watchdog: forcing exit after 20s")
+            time.sleep(45)
+            print("[self-test] watchdog: forcing exit after 45s")
             os._exit(2)
         threading.Thread(target=_self_test_watchdog, daemon=True).start()
-        rc = _run_self_test()
+        if args.selftest_audio:
+            from .logbook import log as _st_log
+            _st_log("[selftest-audio] starting")
+            try:
+                from .tts.playback import run_selftest_audio
+                rc = run_selftest_audio()
+            except Exception as e:
+                _st_log(f"[selftest-audio] FAIL ({type(e).__name__}: {e})")
+                rc = 1
+        else:
+            rc = _run_self_test()
         os._exit(rc)
 
     app = QApplication(sys.argv)
@@ -643,6 +697,7 @@ def run(argv: list[str] | None = None) -> int:
     engine = EngineView()
     inputs = InputsView()
     wheels = {wid: WheelView(wid) for wid in ("FL", "FR", "RL", "RR")}
+    ptt_status = PTTStatusView()
 
     # ``size_idx`` and ``layout`` are mutated by the size-cycle handler
     # below; closures here read the current value via ``nonlocal``.
@@ -651,6 +706,10 @@ def run(argv: list[str] | None = None) -> int:
     actual_mult = base_mult * SIZE_FACTORS[size_idx]
     layout = compute_layout(geom.width(), geom.height(), multiplier=actual_mult)
     _apply_layout(window, engine, inputs, wheels, layout)
+    ptt_status.setParent(window)
+    ptt_status.setGeometry(*_ptt_status_geom(layout))
+    ptt_status.show()
+    ptt_status.raise_()
     window.move(geom.x(), geom.y())
 
     def _set_size(idx: int) -> None:
@@ -661,6 +720,7 @@ def run(argv: list[str] | None = None) -> int:
         new_mult = base_mult * SIZE_FACTORS[idx]
         layout = compute_layout(geom.width(), geom.height(), multiplier=new_mult)
         _resize_widgets(engine, inputs, wheels, layout)
+        ptt_status.setGeometry(*_ptt_status_geom(layout))
         log_action(f"size -> {SIZE_LABELS[idx]}")
 
     def _cycle_size() -> None:
@@ -668,6 +728,8 @@ def run(argv: list[str] | None = None) -> int:
 
     def _do_reset() -> None:
         _reset_layout(engine, inputs, wheels, layout)
+        ptt_status.setGeometry(*_ptt_status_geom(layout))
+        ptt_status.show()
         log_action("reset positions")
 
     # Per-widget show/hide, driven by the tray Windows/VR "Widgets" submenus.
@@ -712,6 +774,7 @@ def run(argv: list[str] | None = None) -> int:
                     if vis.get(wid, True):
                         view.show()
             window.show()
+            ptt_status.show()
             if not vr.is_running():
                 repaint_timer.start()
             else:
@@ -889,9 +952,11 @@ def run(argv: list[str] | None = None) -> int:
     # the surface constant. The max is the layout at the biggest Size step.
     _max_layout = compute_layout(geom.width(), geom.height(),
                                  multiplier=base_mult * max(SIZE_FACTORS))
+    _ptt_max = _ptt_status_geom(_max_layout)
     vr.set_max_sizes({
         "engine": (_max_layout.engine.w, _max_layout.engine.h),
         "inputs": (_max_layout.inputs.w, _max_layout.inputs.h),
+        "ptt": (_ptt_max[2], _ptt_max[3]),
         **{wid: (p.w, p.h) for wid, p in _max_layout.wheels.items()},
     })
 
@@ -945,6 +1010,9 @@ def run(argv: list[str] | None = None) -> int:
     # IDLE-click → start_check / READY-click → restart_into_update.
     window._updater = UpdateController(window)
 
+    # Filled in once `_stop_ptt` / `_restart_ptt` exist (defined later).
+    _ptt_hooks: dict = {"pause": lambda: None, "resume": lambda: None}
+
     window._tray = make_tray(
         window,
         on_reset=_do_reset,
@@ -977,6 +1045,8 @@ def run(argv: list[str] | None = None) -> int:
         updater=window._updater,
         on_toggle_overlay=_toggle_overlay,
         is_overlay_visible=_is_overlay_visible,
+        on_ptt_pause=lambda: _ptt_hooks["pause"](),
+        on_ptt_resume=lambda: _ptt_hooks["resume"](),
         reset_shortcut=HOTKEY_RESET_LABEL,
         quit_shortcut=HOTKEY_QUIT_LABEL,
         logging_shortcut=HOTKEY_LOG_LABEL,
@@ -1040,6 +1110,8 @@ def run(argv: list[str] | None = None) -> int:
         for wid, view in wheels.items():
             if visibility.get(wid, True):
                 view.show()
+        ptt_status.show()
+        ptt_status.raise_()
 
     countdown.finished.connect(_reveal_widgets)
 
@@ -1094,8 +1166,6 @@ def run(argv: list[str] | None = None) -> int:
         if _rw_client is not None:
             _rw_client.start_polling(_on_rw_message)
 
-        _init_ptt()
-
     def _on_rw_message(msg: dict) -> None:
         text = msg.get("text", "")
         if not text:
@@ -1127,8 +1197,8 @@ def run(argv: list[str] | None = None) -> int:
             if _speech_scheduler is not None:
                 _speech_scheduler.enqueue(pa.message, TTSPriority.HIGH, ttl_seconds=10)
             if _rw_client is not None:
-                _rw_client.post_event({
-                    "type": "proximity",
+                    _rw_client.post_event({
+                    "event_type": "proximity",
                     "message": pa.message,
                     "gap_pct": round(pa.gap_pct, 4),
                 })
@@ -1142,13 +1212,28 @@ def run(argv: list[str] | None = None) -> int:
                     _speech_scheduler.enqueue(alert.message, prio, ttl_seconds=15)
                 if _rw_client is not None:
                     _rw_client.post_event({
-                        "type": "incident_alert",
+                        "event_type": "incident_alert",
                         "severity": alert.severity.value,
                         "message": alert.message,
                         "count": alert.current_count,
                     })
 
     # --- PTT (Push-to-Talk) pipeline ------------------------------------
+    # Worker threads (winmm poll / recorder) must not touch Qt widgets.
+    class _PTTUiBridge(QObject):
+        held_changed = Signal(bool)
+        error_changed = Signal(str)
+
+    _ptt_ui = _PTTUiBridge(window)
+    _ptt_ui.held_changed.connect(ptt_status.set_held)
+    _ptt_ui.error_changed.connect(ptt_status.set_error)
+
+    def _ptt_ui_held(held: bool) -> None:
+        _ptt_ui.held_changed.emit(bool(held))
+
+    def _ptt_ui_error(message: str) -> None:
+        _ptt_ui.error_changed.emit(str(message or ""))
+
     _ptt_controller: PTTController | None = None
 
     def _get_driver_context() -> DriverContext:
@@ -1181,16 +1266,22 @@ def run(argv: list[str] | None = None) -> int:
         )
 
     _feedback_queue: list[dict] = []
+    from .ptt.feedback import FeedbackDedupe, idempotency_key as _fb_key
+    _feedback_dedupe = FeedbackDedupe()
 
     def _on_driver_feedback(text: str, duration: float, ctx: DriverContext) -> None:
         import time as _time
+        if not _feedback_dedupe.accept(text):
+            return
+        key = _fb_key(text)
         event = {
-            "type": "driver_feedback",
+            "event_type": "driver_feedback",
             "message": text,
             "payload": {
                 "transcript": text,
                 "audio_duration_s": round(duration, 1),
                 "timestamp": _time.time(),
+                "idempotency_key": key,
                 "lap": ctx.lap,
                 "lap_dist_pct": round(ctx.lap_dist_pct, 4),
                 "corner": ctx.corner_name,
@@ -1204,20 +1295,38 @@ def run(argv: list[str] | None = None) -> int:
                 },
             },
         }
+        # Drop a queued copy of the same utterance so drain + live post
+        # cannot produce two 201s.
+        _feedback_queue[:] = [
+            ev for ev in _feedback_queue
+            if (ev.get("payload") or {}).get("idempotency_key") != key
+        ]
         if _rw_client is not None:
             _drain_feedback_queue()
-            if not _rw_client.post_event(event):
+            ok, code, err = _rw_client.post_event_result(event)
+            if ok:
+                log(f"[ptt] upload http={code} key={key}")
+            else:
                 _feedback_queue.append(event)
-                log("[ptt] driver_feedback queued (worker unavailable)")
+                if code:
+                    log(f"[ptt] upload failed http={code}: {err}")
+                    _ptt_ui_error(f"upload HTTP {code}")
+                else:
+                    log("[ptt] driver_feedback queued (worker unavailable)")
         else:
             _feedback_queue.append(event)
+            log("[ptt] driver_feedback queued (no race-worker)")
 
     def _drain_feedback_queue() -> None:
         while _feedback_queue and _rw_client is not None:
             ev = _feedback_queue[0]
-            if _rw_client.post_event(ev):
+            ok, code, err = _rw_client.post_event_result(ev)
+            if ok:
+                log(f"[ptt] upload http={code}")
                 _feedback_queue.pop(0)
             else:
+                if code:
+                    log(f"[ptt] upload failed http={code}: {err}")
                 break
 
     def _on_ptt_audio(wav_bytes: bytes, duration: float) -> None:
@@ -1228,6 +1337,7 @@ def run(argv: list[str] | None = None) -> int:
             stt = get_stt_engine(cfg["stt_engine"])
             if stt is None:
                 log("[ptt] no STT engine available")
+                _ptt_ui_error("no STT engine")
                 return
             ptt_key = cfg.get("whisper_api_key", "")
             if ptt_key:
@@ -1235,6 +1345,7 @@ def run(argv: list[str] | None = None) -> int:
             result = stt.transcribe(wav_bytes)
             if not result.text:
                 log("[ptt] empty transcription")
+                _ptt_ui_error("empty transcription")
                 return
             log(f"[ptt] STT result: {result.text[:80]} (lang={result.language})")
             _intent_handler.handle(result.text, audio_duration=duration)
@@ -1254,35 +1365,71 @@ def run(argv: list[str] | None = None) -> int:
         get_context=_get_driver_context,
     )
 
-    def _init_ptt() -> None:
+    def _stop_ptt() -> None:
+        nonlocal _ptt_controller
+        if _ptt_controller is not None:
+            _ptt_controller.stop()
+            _ptt_controller = None
+        _ptt_ui_held(False)
+
+    def _restart_ptt() -> None:
+        """Start/restart PTT polling for the whole app lifetime.
+
+        Independent of iRacing connect / overlay visibility / settings
+        dialog. The assign dialog pauses this listener so only one
+        winmm poller runs at a time.
+        """
         from .settings import load_ptt_settings
-        cfg = load_ptt_settings()
-        if not cfg["enabled"]:
-            return
-        binding_data = cfg.get("binding")
-        if not binding_data:
-            return
         from .ptt.input_binding import PTTBinding
-        binding = PTTBinding.from_dict(binding_data)
-        recorder = AudioRecorder(device_index=cfg.get("device_index"))
+        _stop_ptt()
+        cfg = load_ptt_settings()
+        binding_data = cfg.get("binding")
+        if not cfg["enabled"] and not binding_data:
+            log("[overlay] PTT idle (not enabled, no binding)")
+            return
+        binding = None
+        if binding_data:
+            try:
+                binding = PTTBinding.from_dict(binding_data)
+            except Exception as e:
+                log(f"[overlay] PTT binding invalid: {e}")
+        recorder = recorder_from_ptt_settings(cfg)
+        if recorder.last_error:
+            _ptt_ui_error(recorder.last_error)
+        from .tts.playback import configure_playback_from_ptt_settings
+        configure_playback_from_ptt_settings(cfg)
         controller = PTTController(
             recorder=recorder,
             on_audio_captured=_on_ptt_audio,
             on_mute_tts=_on_mute_tts,
             mode=PTTMode(cfg.get("mode", "hold")),
             max_duration_s=cfg.get("max_duration_s", 15.0),
+            wheel_backend=cfg.get("wheel_backend"),
+            on_held=_ptt_ui_held,
+            on_error=_ptt_ui_error,
+            mic_grace_s=float(cfg.get("mic_grace_s", 0.45)),
+            mic_keep_warm=bool(cfg.get("mic_keep_warm", False)),
         )
-        controller.set_binding(binding)
+        if binding is not None:
+            controller.set_binding(binding)
         controller.start()
         nonlocal _ptt_controller
         _ptt_controller = controller
+        bind_txt = binding.display_name if binding else "unbound"
+        mic = cfg.get("device_name") or f"index={cfg.get('device_index')}"
+        out = cfg.get("output_device_name") or "Windows default"
         log(f"[overlay] PTT started (mode={cfg['mode']}, "
-            f"binding={binding.display_name}, "
-            f"wheel={cfg.get('wheel_backend', 'winmm')})")
+            f"binding={bind_txt}, "
+            f"wheel={cfg.get('wheel_backend', 'winmm')}, "
+            f"mic={mic!r}, output={out!r}, "
+            f"grace={cfg.get('mic_grace_s', 0.45)}s, "
+            f"keep_warm={bool(cfg.get('mic_keep_warm', False))})")
+
+    _ptt_hooks["pause"] = _stop_ptt
+    _ptt_hooks["resume"] = _restart_ptt
 
     def _shutdown_race_engineer() -> None:
-        if _ptt_controller is not None:
-            _ptt_controller.stop()
+        _stop_ptt()
         if _speech_scheduler is not None:
             _speech_scheduler.stop()
         if _rw_client is not None:
@@ -1354,6 +1501,9 @@ def run(argv: list[str] | None = None) -> int:
 
     window.show()
 
+    # PTT polling starts here — not gated on iRacing / source detection.
+    _restart_ptt()
+
     # Provide the overlay window's native handle to DirectInput8 so it
     # can set a cooperative level without creating its own HWND.
     try:
@@ -1405,7 +1555,8 @@ def run(argv: list[str] | None = None) -> int:
             _process_iracing_frame(f)
         t1 = time.perf_counter()
         items = []
-        for key, view in (("engine", engine), ("inputs", inputs), *wheels.items()):
+        for key, view in (("engine", engine), ("inputs", inputs),
+                          ("ptt", ptt_status), *wheels.items()):
             if not view.isVisible():
                 continue
             g = view.geometry()

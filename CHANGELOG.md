@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.17] - 2026-10-16
+
+### Fixed
+- **TTS output-device selection never worked in the frozen exe**: `sounddevice.play()` requires numpy, which the PyInstaller spec excludes (`NumPy must be installed for play()/rec()/playrec(); falling back to Windows default`). Playback now writes raw int16 through `sounddevice.RawOutputStream` (same style as the PTT `RawInputStream` recorder). If WASAPI rejects the WAV rate (16 kHz beeps vs 48 kHz headset), PCM is resampled to the device native rate and retried; WAV channel count is used first, then the device's channel count. `--selftest-audio` plus a Release/smoke CI step prove the frozen exe imports this path without numpy.
+
+## [0.9.0-test.16] - 2026-10-16
+
+### Added
+- **TTS output device** in Радио (PTT): lists Windows render endpoints, persisted by name + host API. Playback uses WASAPI (`sounddevice`) to the selected device and logs which endpoint each play used. `winsound` / `pygame.mixer` cannot select a device (Windows default only) and are skipped when an output is chosen; if the device is missing or fails, playback falls back to the default with a warning.
+- **Mic grace / keep-warm** settings: after PTT release the recorder waits briefly for the first Bluetooth samples (default 0.45 s) then **closes the capture stream promptly** (logged — HFP capture can mute `Headphones (Px7 S3 Stereo)`). Optional keep-warm leaves HFP open for faster short presses; default off so stereo is not held muted.
+
+### Fixed
+- **Duplicate `driver_feedback` POSTs**: one utterance could yield two `POST /events` 201s ~1 s apart (PTT bounce and/or queued retry + live post). Client now posts at most once per normalised transcript in a 4 s window (`idempotency_key` on the payload) and drops a queued copy of the same utterance.
+- **Short Bluetooth PTT empty recording**: `RawInputStream.start()` can return before HFP delivers samples; a ~1 s press then `stop()` produced only a WAV header (`recording empty (mic produced no samples)`). Mic open no longer holds the PTT lock, stop waits for the first callback, and a small bounce debounce ignores a second press right after release.
+
+## [0.9.0-test.15] - 2026-10-16
+
+### Fixed
+- **PTT did nothing outside the Assign dialog**: background polling started only after iRacing connected (`_init_ptt` lived inside `_init_race_engineer`). The listener now starts with the app (iRacing optional, settings closed) and is paused/restarted around the PTT dialog so assign and hold do not fight. Each matching press/release is logged once: `[ptt] down btn=24` / `[ptt] up`.
+- **Mic opened PortAudio default `-1`**: Bluetooth-only setups have no default input (`Error querying device -1`). The recorder now opens the device selected in the UI by persisted name/host API (index is fallback) and refuses `-1` with a clear error on screen and in the log.
+- **Driver feedback POSTed `type`**: the client now sends `event_type` (and still rewrites a leftover `type` alias). Upload logs the HTTP status (`[ptt] upload http=201` / `[ptt] upload failed http=422: …`).
+
+### Added
+- Overlay **PTT lamp**: green while held, red/yellow last error (mic fail, empty recording, upload HTTP error) on the overlay — not only in `session.log`.
+- **rawhid** wheel backend: Windows Raw Input + `HidP_GetUsages`, 128 buttons, FFB-safe (never `CreateFile` / `WriteFile` / XInput / DirectInput Acquire). Default remains **winmm** (read-only `joyGetPosEx`, 32-button mask — the Moza R16 still maps there as the generic 32-button joystick). Buttons 33–128 need `rawhid` (or opt-in DirectInput/pygame, which can invert iRacing FFB).
+
 ## [0.9.0-test.14] - 2026-10-13
 
 ### Fixed

@@ -14,7 +14,12 @@ import pytest
 
 from live_telemetry_evo.ptt.recorder import (
     AudioRecorder, _pcm_to_wav, list_input_devices, find_device_by_name,
+    find_output_device_by_name, resolve_output_device,
     AudioDevice,
+)
+from live_telemetry_evo.ptt.feedback import (
+    FeedbackDedupe, idempotency_key, normalize_transcript,
+    post_driver_feedback_once,
 )
 from live_telemetry_evo.ptt.ptt_controller import (
     PTTController, PTTMode, _generate_beep, _MIN_HOLD_DURATION_S,
@@ -647,6 +652,31 @@ class TestPTTSettingsDevicePersistence:
             assert cfg["device_name"] == ""
             assert cfg["device_hostapi"] == ""
             assert cfg["wheel_backend"] == "winmm"
+            assert cfg["output_device_name"] == ""
+            assert cfg["output_device_hostapi"] == ""
+            assert cfg["mic_keep_warm"] is False
+            assert cfg["mic_grace_s"] == 0.45
+        finally:
+            settings._positions_path = orig
+
+    def test_output_device_round_trip(self, tmp_path):
+        from live_telemetry_evo import settings
+        orig = settings._positions_path
+        settings._positions_path = lambda: tmp_path / "positions.json"
+        try:
+            settings.save_ptt_settings(
+                output_device_name="Headphones (Px7 S3 Stereo)",
+                output_device_hostapi="Windows WASAPI",
+                output_device_index=5,
+                mic_grace_s=0.5,
+                mic_keep_warm=True,
+            )
+            cfg = settings.load_ptt_settings()
+            assert cfg["output_device_name"] == "Headphones (Px7 S3 Stereo)"
+            assert cfg["output_device_hostapi"] == "Windows WASAPI"
+            assert cfg["output_device_index"] == 5
+            assert cfg["mic_grace_s"] == 0.5
+            assert cfg["mic_keep_warm"] is True
         finally:
             settings._positions_path = orig
 
@@ -983,8 +1013,8 @@ class TestPygamePTTBackend:
             time.sleep(0.05)
             listener.stop()
         joined = "\n".join(logs)
-        assert "pygame event device=0 name='MOZA R16 Ultra Base' button=3 pressed" in joined
-        assert "pygame assign device=0 name='MOZA R16 Ultra Base' button=3" in joined
+        assert "event device=0 name='MOZA R16 Ultra Base' button=3 pressed" in joined
+        assert "assign joy=0 btn=3" in joined
 
     def test_pygame_press_release_honors_binding(self):
         from live_telemetry_evo.ptt import input_binding as mod
@@ -1007,6 +1037,8 @@ class TestPygamePTTBackend:
         joined = "\n".join(logs)
         assert "button=7 pressed" in joined
         assert "button=7 released" in joined
+        assert "[ptt] down btn=7" in joined
+        assert "[ptt] up" in joined
 
     def test_assign_press_from_worker_does_not_block_gui(self):
         """Worker-thread press must not stall the caller (GUI) thread.
@@ -1215,7 +1247,11 @@ class TestFFBSafePolling:
         assert "no haptic init" in text
         assert "pygame_no_haptic" in text
         assert "dinput_ffb_safe" in text
+        assert "rawhid_ffb_safe" in text
         assert "apply_sdl_ffb_safe_hints" in text
+        assert "playback_numpy_free" in text
+        assert "raw_output_stream" in text
+        assert "--selftest-audio" in text
 
     def test_settings_dialog_does_not_start_pygame_by_default(self):
         src = (Path(__file__).parent.parent / "src" / "live_telemetry_evo"
@@ -1263,3 +1299,403 @@ class TestQuitOnLastWindowClosed:
         source = app_src.read_text(encoding="utf-8")
         assert "setQuitOnLastWindowClosed(False)" in source, \
             "app.py must call setQuitOnLastWindowClosed(False)"
+
+
+class TestResolveInputDevice:
+    def test_prefers_name_over_index(self):
+        from live_telemetry_evo.ptt.recorder import resolve_input_device
+        wasapi = AudioDevice(
+            index=7, name="Headset (Px7 S3 Hands-Free AG Audio)",
+            max_input_channels=1, default_samplerate=16000,
+            hostapi_name="Windows WASAPI")
+        other = AudioDevice(
+            index=0, name="Other", max_input_channels=1,
+            default_samplerate=44100, is_default=True,
+            hostapi_name="MME")
+        with patch("live_telemetry_evo.ptt.recorder.list_input_devices",
+                   return_value=[other, wasapi]):
+            idx, err = resolve_input_device(
+                "Headset (Px7 S3 Hands-Free AG Audio)",
+                "Windows WASAPI", 0)
+        assert err == ""
+        assert idx == 7
+
+    def test_no_default_minus_one(self):
+        from live_telemetry_evo.ptt.recorder import resolve_input_device
+        with patch("live_telemetry_evo.ptt.recorder.list_input_devices",
+                   return_value=[]):
+            idx, err = resolve_input_device("", "", None)
+        assert idx is None
+        assert "no input device" in err
+
+    def test_recorder_refuses_portaudio_default_sentinel(self):
+        rec = AudioRecorder(device_index=-1)
+        assert rec.start() is False
+        assert rec.last_error
+        rec2 = AudioRecorder(device_index=None)
+        assert rec2.start() is False
+        assert rec2.last_error
+
+    def test_recorder_from_settings_uses_name(self, tmp_path):
+        from live_telemetry_evo.ptt.recorder import recorder_from_ptt_settings
+        dev = AudioDevice(
+            index=4, name="Headset (Px7 S3 Hands-Free AG Audio)",
+            max_input_channels=1, default_samplerate=16000,
+            hostapi_name="MME")
+        with patch("live_telemetry_evo.ptt.recorder.list_input_devices",
+                   return_value=[dev]):
+            rec = recorder_from_ptt_settings({
+                "device_name": "Headset (Px7 S3 Hands-Free AG Audio)",
+                "device_hostapi": "MME",
+                "device_index": 99,
+            })
+        assert rec._device == 4
+
+
+class TestPTTHeldAndErrorCallbacks:
+    def test_recorder_failure_notifies(self):
+        held: list[bool] = []
+        errors: list[str] = []
+        rec = MagicMock()
+        rec.start.return_value = False
+        rec.last_error = "cannot open mic 'Headset' (index=4): boom"
+        rec.stop.return_value = b"RIFF"
+        ctrl = PTTController(
+            recorder=rec,
+            on_held=held.append,
+            on_error=errors.append,
+            mode=PTTMode.HOLD,
+        )
+        ctrl._on_press()
+        assert held == [True, False]
+        assert errors == ["cannot open mic 'Headset' (index=4): boom"]
+        assert not ctrl.is_active
+
+
+class TestWinmmBackgroundPoll:
+    def test_bound_button_logs_down_up_once(self):
+        from live_telemetry_evo.ptt import input_binding as mod
+        events: list[str] = []
+        logs: list[str] = []
+        state = {"mask": 0}
+
+        def mock_read(_jid):
+            return state["mask"]
+
+        def mock_list(*_a, **_k):
+            return [WinmmJoystick(0, "Microsoft PC-joystick driver", 32)]
+
+        with patch.object(mod, "_read_buttons_winmm", mock_read), \
+             patch.object(mod, "list_joysticks_winmm", mock_list), \
+             patch.object(mod, "log", side_effect=lambda m: logs.append(m)):
+            listener = InputListener(wheel_backend="winmm")
+            listener.set_binding(PTTBinding(
+                type=BindingType.JOYSTICK, joy_id=0, button_id=24))
+            listener.start(lambda: events.append("press"),
+                           lambda: events.append("release"))
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline and "winmm poll:" not in "\n".join(logs):
+                time.sleep(0.01)
+            state["mask"] = 1 << 24
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline and "press" not in events:
+                time.sleep(0.01)
+            state["mask"] = 0
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline and "release" not in events:
+                time.sleep(0.01)
+            listener.stop()
+        assert events == ["press", "release"]
+        joined = "\n".join(logs)
+        assert joined.count("[ptt] down btn=24") == 1
+        assert joined.count("[ptt] up") == 1
+
+    def test_empty_device_list_keeps_polling(self):
+        from live_telemetry_evo.ptt import input_binding as mod
+        n = {"v": 0}
+
+        def mock_list(*_a, **_k):
+            n["v"] += 1
+            return []
+
+        with patch.object(mod, "list_joysticks_winmm", mock_list), \
+             patch.object(mod, "_read_buttons_winmm", return_value=0):
+            listener = InputListener(wheel_backend="winmm")
+            listener.start(lambda: None, lambda: None)
+            time.sleep(0.08)
+            listener.stop()
+        assert n["v"] >= 1
+
+
+class TestRawHidBackend:
+    def test_source_never_opens_or_writes_hid(self):
+        from live_telemetry_evo.ptt.rawhid import rawhid_is_ffb_safe_source
+        src = (Path(__file__).parent.parent / "src" / "live_telemetry_evo"
+               / "ptt" / "rawhid.py")
+        text = src.read_text(encoding="utf-8")
+        assert rawhid_is_ffb_safe_source(text)
+        assert "kernel32.CreateFile" not in text
+        assert "RegisterRawInputDevices" in text
+        assert "RIDI_PREPARSEDDATA" in text
+
+    def test_usage_to_button_zero_based(self):
+        from live_telemetry_evo.ptt.rawhid import _usage_to_button
+        assert _usage_to_button(1) == 0
+        assert _usage_to_button(25) == 24
+        assert _usage_to_button(128) == 127
+
+    def test_button_count_from_range_caps(self):
+        from live_telemetry_evo.ptt.rawhid import (
+            _HIDP_BUTTON_CAPS, _button_count_from_caps,
+        )
+        cap = _HIDP_BUTTON_CAPS()
+        cap.IsRange = 1
+        cap.Range.UsageMin = 1
+        cap.Range.UsageMax = 128
+        assert _button_count_from_caps([cap]) == 128
+
+    def test_fake_backend_high_button(self):
+        from live_telemetry_evo.ptt.rawhid import FakeRawHidBackend
+        backend = FakeRawHidBackend()
+        captured: list = []
+        listener = InputListener(joy_backend=backend)
+        listener.start_assign(captured.append)
+        time.sleep(0.03)
+        backend.emit(0, 64, True)
+        deadline = time.monotonic() + 1.0
+        while not captured and time.monotonic() < deadline:
+            time.sleep(0.01)
+        listener.stop()
+        assert captured
+        assert captured[0].button_id == 64
+
+    def test_rawhid_is_a_wheel_backend(self):
+        from live_telemetry_evo.ptt.ffb_safe import (
+            WHEEL_BACKENDS, DEFAULT_WHEEL_BACKEND, normalize_wheel_backend,
+        )
+        assert DEFAULT_WHEEL_BACKEND == "winmm"
+        assert "rawhid" in WHEEL_BACKENDS
+        assert normalize_wheel_backend("rawinput") == "rawhid"
+
+    def test_diagnostics_mentions_rawhid(self):
+        report = run_diagnostics(active_backend="winmm")
+        assert "rawhid" in report
+        assert "128 buttons" in report or "128" in report
+
+
+class TestPTTStartsWithoutIRacing:
+    def test_app_restarts_ptt_at_startup_not_only_on_iracing(self):
+        src = Path(__file__).parent.parent / "src" / "live_telemetry_evo" / "app.py"
+        text = src.read_text(encoding="utf-8")
+        assert "_restart_ptt()" in text
+        assert "_init_ptt" not in text
+        assert "PTT polling starts here" in text
+        marker = text.find("PTT polling starts here")
+        assert "_restart_ptt()" in text[marker:marker + 200]
+        engineer = text.split("def _init_race_engineer", 1)[1].split(
+            "def _on_rw_message", 1)[0]
+        assert "_restart_ptt()" not in engineer
+        assert "_init_ptt()" not in engineer
+        assert "PTTStatusView" in text
+        assert "event_type" in text
+        assert '"type": "driver_feedback"' not in text
+        assert "FeedbackDedupe" in text
+        assert "configure_playback_from_ptt_settings" in text
+        assert "idempotency_key" in text
+
+
+class TestPreferEventType:
+    def test_rewrites_type_alias(self):
+        from live_telemetry_evo.race_worker_client import prefer_event_type
+        out = prefer_event_type({"type": "driver_feedback", "message": "hi"})
+        assert out["event_type"] == "driver_feedback"
+        assert "type" not in out
+
+    def test_event_type_wins(self):
+        from live_telemetry_evo.race_worker_client import prefer_event_type
+        out = prefer_event_type({
+            "event_type": "spin",
+            "type": "driver_feedback",
+        })
+        assert out["event_type"] == "spin"
+        assert "type" not in out
+
+
+class TestPostEventResult:
+    def test_no_session_is_status_zero(self):
+        from live_telemetry_evo.race_worker_client import RaceWorkerClient
+        c = RaceWorkerClient(base_url="http://example.invalid", token="t")
+        ok, code, err = c.post_event_result({"event_type": "driver_feedback"})
+        assert ok is False
+        assert code == 0
+        assert "session" in err
+
+    def test_http_error_returns_code(self):
+        import urllib.error
+        from live_telemetry_evo.race_worker_client import RaceWorkerClient
+        c = RaceWorkerClient(base_url="http://example.invalid", token="t")
+        c._session_id = "sid"
+        err = urllib.error.HTTPError(
+            "http://example.invalid", 422, "Unprocessable", {}, None)
+        with patch("live_telemetry_evo.race_worker_client._request_ex",
+                   side_effect=err):
+            ok, code, msg = c.post_event_result({"type": "driver_feedback"})
+        assert ok is False
+        assert code == 422
+        assert "422" in msg
+
+
+class TestOutputDeviceListing:
+    def test_find_output_by_name(self):
+        stereo = AudioDevice(
+            index=5, name="Headphones (Px7 S3 Stereo)",
+            max_input_channels=0, max_output_channels=2,
+            default_samplerate=48000, is_default=True,
+            hostapi_name="Windows WASAPI")
+        hfp = AudioDevice(
+            index=6, name="Headset (Px7 S3 Hands-Free AG Audio)",
+            max_input_channels=0, max_output_channels=1,
+            default_samplerate=16000, hostapi_name="MME")
+        with patch("live_telemetry_evo.ptt.recorder.list_output_devices",
+                   return_value=[stereo, hfp]):
+            idx = find_output_device_by_name(
+                "Headphones (Px7 S3 Stereo)", "Windows WASAPI")
+            assert idx == 5
+            idx2, err = resolve_output_device(
+                "Headphones (Px7 S3 Stereo)", "Windows WASAPI", 99)
+            assert err == ""
+            assert idx2 == 5
+
+    def test_empty_selection_is_windows_default(self):
+        idx, err = resolve_output_device("", "", None)
+        assert idx is None
+        assert err == ""
+
+    def test_missing_output_name(self):
+        with patch("live_telemetry_evo.ptt.recorder.list_output_devices",
+                   return_value=[]):
+            idx, err = resolve_output_device("Nope", "", None)
+        assert idx is None
+        assert "not found" in err
+
+
+class TestFeedbackDedupe:
+    def test_one_post_per_utterance(self):
+        dedupe = FeedbackDedupe(window_s=4.0)
+        posts: list[str] = []
+        text = "баланс задний, недокрут в третьем"
+        assert post_driver_feedback_once(text, posts.append, dedupe) is True
+        assert post_driver_feedback_once(text, posts.append, dedupe) is False
+        assert post_driver_feedback_once(
+            "Баланс задний, недокрут в третьем!", posts.append, dedupe) is False
+        assert posts == [text]
+
+    def test_punctuation_and_case_normalise(self):
+        assert normalize_transcript("Hello, World!") == "hello world"
+        assert idempotency_key("Hello, World!") == idempotency_key("hello world")
+
+    def test_different_utterances_both_post(self):
+        dedupe = FeedbackDedupe(window_s=4.0)
+        posts: list[str] = []
+        assert post_driver_feedback_once("alpha", posts.append, dedupe)
+        assert post_driver_feedback_once("bravo", posts.append, dedupe)
+        assert posts == ["alpha", "bravo"]
+
+    def test_same_text_after_window_posts_again(self):
+        dedupe = FeedbackDedupe(window_s=0.05)
+        posts: list[str] = []
+        assert post_driver_feedback_once("same", posts.append, dedupe)
+        time.sleep(0.08)
+        assert post_driver_feedback_once("same", posts.append, dedupe)
+        assert posts == ["same", "same"]
+
+    def test_empty_rejected(self):
+        dedupe = FeedbackDedupe()
+        posts: list[str] = []
+        assert post_driver_feedback_once("   ", posts.append, dedupe) is False
+        assert posts == []
+
+    def test_two_threads_one_post(self):
+        dedupe = FeedbackDedupe(window_s=4.0)
+        posts: list[str] = []
+        barrier = threading.Barrier(2)
+
+        def worker():
+            barrier.wait()
+            post_driver_feedback_once("race", posts.append, dedupe)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert posts == ["race"]
+
+
+class TestRecorderGraceAndClose:
+    def test_stop_waits_for_late_samples(self):
+        rec = AudioRecorder(device_index=0, grace_s=0.4, device_label="BT mic")
+        rec._stream = object()
+        rec._recording = True
+
+        def deliver():
+            time.sleep(0.05)
+            rec._audio_callback(b"\x01\x00" * 32, 32, None, None)
+
+        threading.Thread(target=deliver, daemon=True).start()
+        wav = rec.stop()
+        assert len(wav) > 44
+        assert rec._stream is None
+
+    def test_stop_closes_and_logs_hfp(self):
+        rec = AudioRecorder(device_index=3, grace_s=0.0,
+                            device_label="Headset (Px7 S3 Hands-Free AG Audio)")
+        stream = MagicMock()
+        rec._stream = stream
+        logs: list[str] = []
+        with patch("live_telemetry_evo.ptt.recorder.log",
+                   side_effect=lambda m: logs.append(m)):
+            rec.stop(grace_s=0.0)
+        joined = "\n".join(logs)
+        assert "closed mic promptly" in joined
+        assert "HFP" in joined or "stereo" in joined.lower()
+        stream.stop.assert_called()
+        stream.close.assert_called()
+        assert rec._stream is None
+
+    def test_keep_warm_does_not_close(self):
+        rec = AudioRecorder(device_index=1, grace_s=0.0, keep_warm=True,
+                            device_label="BT mic")
+        stream = MagicMock()
+        rec._stream = stream
+        rec.stop(grace_s=0.0)
+        assert rec._stream is stream
+        stream.stop.assert_not_called()
+        rec.unwarm()
+        assert rec._stream is None
+
+    def test_controller_does_not_hold_lock_during_start(self):
+        started = threading.Event()
+        unblock = threading.Event()
+
+        class SlowRec:
+            last_error = ""
+
+            def start(self):
+                started.set()
+                unblock.wait(timeout=1.0)
+                return True
+
+            def stop(self, grace_s=None):
+                return b"RIFF" + b"\x00" * 100
+
+        ctrl = PTTController(recorder=SlowRec(), mode=PTTMode.HOLD)
+        t = threading.Thread(target=ctrl._on_press, daemon=True)
+        t.start()
+        assert started.wait(timeout=1.0)
+        acquired = ctrl._lock.acquire(timeout=0.3)
+        assert acquired, "PTT lock must not be held while the mic opens"
+        ctrl._lock.release()
+        unblock.set()
+        t.join(timeout=1.0)
+        assert ctrl.is_active

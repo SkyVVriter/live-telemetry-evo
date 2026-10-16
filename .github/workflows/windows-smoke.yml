@@ -87,6 +87,48 @@ jobs:
             if ($text -notmatch 'Overall: PASS') {
               throw "Self-test log does not contain 'Overall: PASS'"
             }
+            if ($text -notmatch 'RawOutputStream') {
+              throw "Self-test log does not mention RawOutputStream"
+            }
+          }
+
+      - name: Frozen audio playback self-test
+        shell: pwsh
+        run: |
+          $env:LIVE_TELEMETRY_DATA_DIR = Join-Path $env:GITHUB_WORKSPACE 'smoke-logs\selftest-audio'
+          New-Item -ItemType Directory -Force -Path $env:LIVE_TELEMETRY_DATA_DIR | Out-Null
+          $proc = Start-Process -FilePath $env:SMOKE_EXE `
+            -ArgumentList "--selftest-audio" `
+            -PassThru
+          $exited = $proc.WaitForExit(90000)
+          $logFile = Join-Path $env:LIVE_TELEMETRY_DATA_DIR 'logs' 'session.log'
+          if (-not $exited) {
+            Write-Host "selftest-audio timed out after 90s — killing"
+            taskkill /T /F /PID $proc.Id 2>$null
+            if (Test-Path $logFile) { Get-Content $logFile | ForEach-Object { Write-Host $_ } }
+            throw "selftest-audio timed out"
+          }
+          if (Test-Path $logFile) {
+            Get-Content $logFile | ForEach-Object { Write-Host $_ }
+          } else {
+            throw "selftest-audio produced no session.log"
+          }
+          Write-Host "selftest-audio exit code: $($proc.ExitCode)"
+          $text = Get-Content $logFile -Raw
+          if ($text -match 'NumPy must be installed') {
+            throw "frozen playback still requires numpy"
+          }
+          if ($text -notmatch 'sounddevice\.RawOutputStream: OK') {
+            throw "missing sounddevice.RawOutputStream: OK"
+          }
+          if ($text -notmatch 'numpy not required: OK') {
+            throw "missing numpy not required: OK"
+          }
+          if ($text -notmatch 'overall: PASS') {
+            throw "selftest-audio log does not contain 'overall: PASS'"
+          }
+          if ($proc.ExitCode -ne 0) {
+            throw "selftest-audio failed with exit code $($proc.ExitCode)"
           }
 
       - name: Prepare smoke-test directories
