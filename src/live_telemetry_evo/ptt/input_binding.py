@@ -6,8 +6,11 @@ Wheel/joystick polling uses exactly one backend, from the
 
 - **winmm** (``joyGetPosEx``): read-only, cannot touch FFB. The generic
   32-button mapper entry is typically the Moza R16. Safe default.
+  DWORD mask = 32 buttons (``joyGetPosEx`` cannot see 33–128).
+- **rawhid**: Windows Raw Input + ``HidP_GetUsages``. 128 buttons.
+  Never ``CreateFile`` / ``WriteFile`` / XInput / DirectInput Acquire.
 - **DirectInput8**: ``DISCL_NONEXCLUSIVE | DISCL_BACKGROUND`` only,
-  128 buttons. Never exclusive, never sends effects.
+  128 buttons. Never exclusive, never sends effects. Can invert FFB.
 - **pygame** (SDL2): joystick-only init, HIDAPI/raw-input off. Can
   still disturb FFB on some wheels — opt-in only.
 - **off**: keyboard PTT only.
@@ -151,15 +154,16 @@ def _get_winmm():
     return _winmm_funcs if _winmm_funcs is not False else None
 
 
-def list_joysticks_winmm() -> list[WinmmJoystick]:
+def list_joysticks_winmm(*, verbose: bool = True) -> list[WinmmJoystick]:
     funcs = _get_winmm()
     if funcs is None:
         return []
     joyGetNumDevs, joyGetDevCapsW, joyGetPosEx = funcs
     num = joyGetNumDevs()
-    log(f"[ptt/input] winmm: joyGetNumDevs={num}, "
-        f"sizeof(JOYCAPSW)={ctypes.sizeof(_JOYCAPSW)}, "
-        f"sizeof(JOYINFOEX)={ctypes.sizeof(_JOYINFOEX)}")
+    if verbose:
+        log(f"[ptt/input] winmm: joyGetNumDevs={num}, "
+            f"sizeof(JOYCAPSW)={ctypes.sizeof(_JOYCAPSW)}, "
+            f"sizeof(JOYINFOEX)={ctypes.sizeof(_JOYINFOEX)}")
     result = []
     for i in range(min(num, 16)):
         caps = _JOYCAPSW()
@@ -169,13 +173,14 @@ def list_joysticks_winmm() -> list[WinmmJoystick]:
             if name:
                 result.append(WinmmJoystick(
                     i, name, min(caps.wNumButtons, _MAX_JOYSTICK_BUTTONS)))
-                log(f"[ptt/input] winmm [{i}]: {name} ({caps.wNumButtons} btn)")
+                if verbose:
+                    log(f"[ptt/input] winmm [{i}]: {name} ({caps.wNumButtons} btn)")
         else:
             info = _JOYINFOEX()
             info.dwSize = ctypes.sizeof(_JOYINFOEX)
             info.dwFlags = _JOY_RETURNBUTTONS
             pos_rc = joyGetPosEx(i, ctypes.byref(info)) if joyGetPosEx else 999
-            if pos_rc == _JOYERR_NOERROR:
+            if pos_rc == _JOYERR_NOERROR and verbose:
                 log(f"[ptt/input] winmm [{i}]: caps failed (rc={rc}) "
                     f"but joyGetPosEx OK (buttons=0x{info.dwButtons:08X})")
     return result
@@ -217,6 +222,8 @@ def list_joysticks(backend: str | None = None) -> list[dict]:
         return []
     if chosen == "winmm":
         result = _list_winmm()
+    elif chosen == "rawhid":
+        result = _list_rawhid()
     elif chosen == "dinput":
         result = _list_dinput()
     elif chosen == "pygame":
@@ -278,6 +285,16 @@ def _list_pygame() -> list[dict]:
         return []
 
 
+def _list_rawhid() -> list[dict]:
+    """Raw Input enumeration — no CreateFile, no FFB writes."""
+    try:
+        from .rawhid import list_devices_rawhid
+        return list_devices_rawhid()
+    except (ImportError, OSError) as e:
+        log(f"[ptt/input] rawhid unavailable: {e}")
+        return []
+
+
 def run_diagnostics(active_backend: str | None = None) -> str:
     """Run backends and return a diagnostic report string.
 
@@ -290,7 +307,8 @@ def run_diagnostics(active_backend: str | None = None) -> str:
         "=== Joystick Diagnostics ===",
         "",
         f"Active wheel backend: {active} (default={DEFAULT_WHEEL_BACKEND})",
-        "FFB policy: winmm is read-only (cannot touch FFB).",
+        "FFB policy: winmm is read-only (cannot touch FFB, 32 buttons).",
+        "rawhid uses WM_INPUT + RIDI_PREPARSEDDATA (no CreateFile, 128 buttons).",
         "DirectInput uses DISCL_NONEXCLUSIVE|DISCL_BACKGROUND only;",
         "never exclusive, never effects / autocenter / DIPROP_FFGAIN.",
         "pygame inits joystick only (no haptic; HIDAPI=0, RAWINPUT=0)",
@@ -324,6 +342,22 @@ def run_diagnostics(active_backend: str | None = None) -> str:
                 f"  [{j.index}] {j.name} ({j.num_buttons} buttons){note}")
     else:
         lines.append("  (no devices)")
+
+    lines.append("")
+    lines.append("--- rawhid (Raw Input, FFB-safe, 128 buttons) ---")
+    try:
+        from .rawhid import list_devices_rawhid
+        raw_devs = list_devices_rawhid()
+        if raw_devs:
+            for d in raw_devs:
+                extra = f", {d.get('vid_pid', '')}" if d.get("vid_pid") else ""
+                lines.append(
+                    f"  [{d['index']}] {d['name']} "
+                    f"({d['buttons']} buttons{extra})")
+        else:
+            lines.append("  (no devices)")
+    except (ImportError, OSError) as e:
+        lines.append(f"  ERROR: {e}")
 
     lines.append("")
     lines.append("--- pygame (SDL2) ---")
@@ -378,6 +412,7 @@ class InputListener:
         self._wheel_backend = resolve_wheel_backend(wheel_backend)
         self._assign_timer: Optional[threading.Timer] = None
         self._subscribed_pygame = False
+        self._subscribed_rawhid = False
 
     @property
     def binding(self) -> Optional[PTTBinding]:
@@ -398,6 +433,7 @@ class InputListener:
         self._stop.set()
         self._cancel_assign_timer()
         self._unsubscribe_pygame()
+        self._unsubscribe_rawhid()
         self._stop_keyboard_listener()
         t = self._joy_thread
         if t is not None and t is not threading.current_thread():
@@ -455,6 +491,46 @@ class InputListener:
         except Exception:
             pass
 
+    def _unsubscribe_rawhid(self) -> None:
+        if not self._subscribed_rawhid:
+            return
+        self._subscribed_rawhid = False
+        try:
+            from .rawhid import get_rawhid_worker
+            backend = self._joy_backend or get_rawhid_worker()
+            backend.unsubscribe(self._on_joy_edge)
+        except Exception:
+            pass
+
+    def _handle_joy_edge(self, joy_id: int, button_id: int, pressed: bool,
+                         *, name: str = "", backend: str = "") -> None:
+        """Press/release for one button. Logs matching PTT edges once."""
+        tag = backend or "joy"
+        if pressed and self._assign_callback is not None:
+            extra = f" name={name!r}" if name else ""
+            log(f"[ptt/input] {tag} assign joy={joy_id} btn={button_id}{extra}")
+            self._deliver_assign(PTTBinding(
+                type=BindingType.JOYSTICK,
+                joy_id=joy_id, button_id=button_id))
+            return
+        if not (self._binding
+                and self._binding.type == BindingType.JOYSTICK
+                and self._binding.joy_id == joy_id
+                and self._binding.button_id == button_id):
+            return
+        if pressed:
+            if not self._pressed:
+                self._pressed = True
+                log(f"[ptt] down btn={button_id}")
+                if self._on_press:
+                    self._on_press()
+        else:
+            if self._pressed:
+                self._pressed = False
+                log("[ptt] up")
+                if self._on_release:
+                    self._on_release()
+
     # ---- keyboard (pynput) ----
 
     def _start_keyboard_listener(self) -> None:
@@ -493,6 +569,7 @@ class InputListener:
                 and self._binding.key_name == key_name):
             if not self._pressed:
                 self._pressed = True
+                log(f"[ptt] down key={key_name}")
                 if self._on_press:
                     self._on_press()
 
@@ -507,6 +584,7 @@ class InputListener:
                 and self._binding.key_name == key_name):
             if self._pressed:
                 self._pressed = False
+                log("[ptt] up")
                 if self._on_release:
                     self._on_release()
 
@@ -521,14 +599,18 @@ class InputListener:
 
     def _joystick_loop(self) -> None:
         if self._joy_backend is not None:
-            self._pygame_poll_loop()
+            self._subscribe_poll_loop(self._joy_backend, "injected")
             return
         backend = self._wheel_backend
-        log(f"[ptt/input] poll wheel backend={backend}")
+        log(f"[ptt/input] poll wheel backend={backend} "
+            f"(background={'yes' if self._on_press else 'assign'})")
         if backend == "off":
             return
         if backend == "winmm":
-            self._winmm_poll_loop(list_joysticks(backend="winmm"))
+            self._winmm_poll_loop()
+            return
+        if backend == "rawhid":
+            self._rawhid_poll_loop()
             return
         if backend == "dinput":
             joys = list_joysticks(backend="dinput")
@@ -563,111 +645,89 @@ class InputListener:
                     continue
                 old = prev.get(idx, [False] * len(buttons))
                 for btn_id, (now, was) in enumerate(zip(buttons, old)):
-                    if now and not was:
-                        if self._assign_callback is not None:
-                            self._deliver_assign(PTTBinding(
-                                type=BindingType.JOYSTICK,
-                                joy_id=idx, button_id=btn_id))
+                    if now != was:
+                        self._handle_joy_edge(
+                            idx, btn_id, now, backend="dinput")
+                        if self._stop.is_set():
                             return
-                        if (self._binding
-                                and self._binding.type == BindingType.JOYSTICK
-                                and self._binding.joy_id == idx
-                                and self._binding.button_id == btn_id):
-                            self._pressed = True
-                            if self._on_press:
-                                self._on_press()
-                    elif not now and was:
-                        if (self._binding
-                                and self._binding.type == BindingType.JOYSTICK
-                                and self._binding.joy_id == idx
-                                and self._binding.button_id == btn_id):
-                            self._pressed = False
-                            if self._on_release:
-                                self._on_release()
                 prev[idx] = buttons
             self._stop.wait(0.01)
 
-    def _winmm_poll_loop(self, joys):
-        winmm_joys = list_joysticks_winmm()
-        if not winmm_joys:
-            return
+    def _winmm_poll_loop(self):
         prev_buttons: dict[int, int] = {}
+        last_enum = 0.0
+        winmm_joys: list[WinmmJoystick] = []
+        last_sig: tuple | None = None
         while not self._stop.is_set():
+            now = time.monotonic()
+            if not winmm_joys or (now - last_enum) >= 3.0:
+                winmm_joys = list_joysticks_winmm(verbose=False)
+                last_enum = now
+                sig = tuple((j.index, j.name, j.num_buttons) for j in winmm_joys)
+                if sig != last_sig:
+                    last_sig = sig
+                    if winmm_joys:
+                        log(f"[ptt/input] winmm poll: {len(winmm_joys)} "
+                            f"device(s), up to "
+                            f"{max(j.num_buttons for j in winmm_joys)} buttons "
+                            f"(joyGetPosEx mask=32)")
+                    else:
+                        log("[ptt/input] winmm: no devices yet; retrying")
             for joy in winmm_joys:
                 buttons = _read_buttons_winmm(joy.index)
                 prev = prev_buttons.get(joy.index, 0)
                 changed = buttons ^ prev
                 if changed:
-                    for btn in range(joy.num_buttons):
+                    n_btn = min(joy.num_buttons, _MAX_JOYSTICK_BUTTONS)
+                    for btn in range(n_btn):
                         mask = 1 << btn
                         if not (changed & mask):
                             continue
                         now_pressed = bool(buttons & mask)
-                        was_pressed = bool(prev & mask)
-                        if now_pressed and not was_pressed:
-                            if self._assign_callback is not None:
-                                self._deliver_assign(PTTBinding(
-                                    type=BindingType.JOYSTICK,
-                                    joy_id=joy.index, button_id=btn))
-                                return
-                            if (self._binding
-                                    and self._binding.type == BindingType.JOYSTICK
-                                    and self._binding.joy_id == joy.index
-                                    and self._binding.button_id == btn):
-                                self._pressed = True
-                                if self._on_press:
-                                    self._on_press()
-                        elif not now_pressed and was_pressed:
-                            if (self._binding
-                                    and self._binding.type == BindingType.JOYSTICK
-                                    and self._binding.joy_id == joy.index
-                                    and self._binding.button_id == btn):
-                                self._pressed = False
-                                if self._on_release:
-                                    self._on_release()
+                        self._handle_joy_edge(
+                            joy.index, btn, now_pressed,
+                            name=joy.name, backend="winmm")
+                        if self._stop.is_set():
+                            return
                 prev_buttons[joy.index] = buttons
             self._stop.wait(0.01)
 
+    def _rawhid_poll_loop(self):
+        try:
+            from .rawhid import get_rawhid_worker
+            backend = self._joy_backend or get_rawhid_worker()
+            self._subscribe_poll_loop(backend, "rawhid")
+        except Exception as e:
+            log(f"[ptt/input] rawhid poll init failed: {e}")
+
     def _pygame_poll_loop(self):
         backend = self._joy_backend or get_pygame_worker()
+        self._subscribe_poll_loop(backend, "pygame")
+
+    def _subscribe_poll_loop(self, backend, tag: str) -> None:
         try:
             backend.ensure_started()
             backend.subscribe(self._on_joy_edge)
-            self._subscribed_pygame = True
+            if tag == "rawhid":
+                self._subscribed_rawhid = True
+            else:
+                self._subscribed_pygame = True
         except Exception as e:
-            log(f"[ptt/input] pygame poll init failed: {e}")
+            log(f"[ptt/input] {tag} poll init failed: {e}")
             return
-        log("[ptt/input] pygame poll: subscribed to dedicated worker")
+        log(f"[ptt/input] {tag} poll: subscribed to dedicated worker")
         while not self._stop.is_set():
             self._stop.wait(0.05)
-        self._unsubscribe_pygame()
+        if tag == "rawhid":
+            self._unsubscribe_rawhid()
+        else:
+            self._unsubscribe_pygame()
 
     def _on_joy_edge(self, device: int, name: str, button: int,
                      pressed: bool) -> None:
-        """Called on the pygame worker thread. Must not block or join."""
+        """Called on a worker thread. Must not block or join."""
         state = "pressed" if pressed else "released"
-        log(f"[ptt/input] pygame event device={device} "
+        log(f"[ptt/input] event device={device} "
             f"name={name!r} button={button} {state}")
-        if pressed:
-            if self._assign_callback is not None:
-                log(f"[ptt/input] pygame assign device={device} "
-                    f"name={name!r} button={button}")
-                self._deliver_assign(PTTBinding(
-                    type=BindingType.JOYSTICK,
-                    joy_id=device, button_id=button))
-                return
-            if (self._binding
-                    and self._binding.type == BindingType.JOYSTICK
-                    and self._binding.joy_id == device
-                    and self._binding.button_id == button):
-                self._pressed = True
-                if self._on_press:
-                    self._on_press()
-        else:
-            if (self._binding
-                    and self._binding.type == BindingType.JOYSTICK
-                    and self._binding.joy_id == device
-                    and self._binding.button_id == button):
-                self._pressed = False
-                if self._on_release:
-                    self._on_release()
+        self._handle_joy_edge(
+            device, button, pressed, name=name, backend="joy")

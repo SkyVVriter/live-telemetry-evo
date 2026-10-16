@@ -11,7 +11,11 @@ Rules:
 - pygame/SDL inits the joystick subsystem only (never ``pygame.init()``
   or haptic). HIDAPI, raw input, and WGI are forced off so SDL does not
   open the wheel and send reports.
-- Prefer winmm (read-only ``joyGetPosEx``) — it cannot touch FFB.
+- Prefer winmm (read-only ``joyGetPosEx``) — it cannot touch FFB
+  (32-button DWORD mask).
+- ``rawhid`` uses ``RegisterRawInputDevices`` + ``WM_INPUT`` and
+  ``GetRawInputDeviceInfo(RIDI_PREPARSEDDATA)``. Never ``CreateFile``
+  on the HID path, never ``WriteFile`` / output reports / XInput.
 """
 from __future__ import annotations
 
@@ -36,7 +40,7 @@ VT_DEV_CREATEEFFECT = 18
 VT_DEV_GETFORCEFEEDBACKSTATE = 21
 VT_DEV_SENDFORCEFEEDBACKCOMMAND = 22
 
-WHEEL_BACKENDS = ("winmm", "dinput", "pygame", "off")
+WHEEL_BACKENDS = ("winmm", "rawhid", "dinput", "pygame", "off")
 DEFAULT_WHEEL_BACKEND = "winmm"
 WHEEL_BACKEND_ALIASES = {
     "directinput": "dinput",
@@ -44,6 +48,9 @@ WHEEL_BACKEND_ALIASES = {
     "di": "dinput",
     "sdl": "pygame",
     "sdl2": "pygame",
+    "raw": "rawhid",
+    "rawinput": "rawhid",
+    "hid": "rawhid",
 }
 
 # Both SDL_HINT_* names and the env-var names SDL actually reads.

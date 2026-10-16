@@ -150,7 +150,8 @@ class PTTSettingsDialog(QDialog):
         bind_layout.addRow("Текущая:", self._bind_label)
 
         self._backend_combo = QComboBox()
-        self._backend_combo.addItem("winmm (безопасно, только чтение)", "winmm")
+        self._backend_combo.addItem("winmm (безопасно, только чтение, 32 кн.)", "winmm")
+        self._backend_combo.addItem("rawhid (безопасно, 128 кн., без FFB)", "rawhid")
         self._backend_combo.addItem("DirectInput", "dinput")
         self._backend_combo.addItem("pygame", "pygame")
         self._backend_combo.addItem("выкл", "off")
@@ -162,7 +163,8 @@ class PTTSettingsDialog(QDialog):
         bind_layout.addRow("Опрос руля (Wheel polling backend):",
                            self._backend_combo)
         backend_hint = QLabel(
-            "winmm не трогает FFB (32 кнопки — обычно R16). "
+            "winmm не трогает FFB (joyGetPosEx — 32 кнопки, обычно R16). "
+            "rawhid — Raw Input, до 128 кнопок, без CreateFile/FFB. "
             "DirectInput / pygame могут инвертировать отдачу в iRacing."
         )
         backend_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
@@ -293,8 +295,18 @@ class PTTSettingsDialog(QDialog):
 
     def _on_test_toggle(self, checked: bool) -> None:
         if checked:
-            dev = self._device_combo.currentData()
-            self._recorder.set_device(dev)
+            from .recorder import resolve_input_device
+            combo_idx = self._device_combo.currentIndex() - 1
+            name = ""
+            hostapi = ""
+            idx = self._device_combo.currentData()
+            if 0 <= combo_idx < len(self._devices):
+                d = self._devices[combo_idx]
+                name, hostapi, idx = d.name, d.hostapi_name, d.index
+            resolved, err = resolve_input_device(name, hostapi, idx)
+            self._recorder.set_device(resolved, name)
+            if err and resolved is None:
+                log(f"[ptt/dialog] mic test: {err}")
             if self._recorder.start():
                 self._test_btn.setText("Остановить")
                 self._level_timer.start()

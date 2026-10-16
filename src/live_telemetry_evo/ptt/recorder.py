@@ -92,12 +92,75 @@ def list_input_devices() -> list[AudioDevice]:
 def find_device_by_name(name: str, hostapi: str = "") -> int | None:
     """Look up a device index by name (and optional host API). Returns
     ``None`` if no match is found."""
-    for d in list_input_devices():
+    if not name:
+        return None
+    devices = list_input_devices()
+    if hostapi:
+        for d in devices:
+            if d.name == name and d.hostapi_name == hostapi:
+                return d.index
+    for d in devices:
         if d.name == name:
-            if hostapi and d.hostapi_name != hostapi:
-                continue
+            return d.index
+    needle = name.strip().lower()
+    for d in devices:
+        if needle and needle in d.name.strip().lower():
             return d.index
     return None
+
+
+def resolve_input_device(
+    device_name: str = "",
+    device_hostapi: str = "",
+    device_index: int | None = None,
+) -> tuple[int | None, str]:
+    """Resolve a PortAudio input device.
+
+    Prefers persisted name (+ host API), then a non-negative index, then
+    the PortAudio default *if it is a real device*. Never returns ``-1``
+    (PortAudio's "no default" sentinel that raises
+    ``Error querying device -1``).
+
+    Returns ``(index, error)``. ``error`` is empty on success.
+    """
+    devices = list_input_devices()
+    if device_name:
+        idx = find_device_by_name(device_name, device_hostapi)
+        if idx is not None and idx >= 0:
+            return idx, ""
+        return None, (
+            f"selected mic {device_name!r} not found — "
+            "open Радио (PTT) and pick a device")
+    if device_index is not None:
+        try:
+            idx = int(device_index)
+        except (TypeError, ValueError):
+            idx = -1
+        if idx >= 0:
+            if any(d.index == idx for d in devices) or not devices:
+                return idx, ""
+            return None, f"mic index {idx} not found"
+    for d in devices:
+        if d.is_default and d.index >= 0:
+            return d.index, ""
+    if devices:
+        return devices[0].index, ""
+    return None, "no input device available (select a mic in PTT settings)"
+
+
+def recorder_from_ptt_settings(cfg: dict) -> AudioRecorder:
+    """Build a recorder bound to the persisted UI device (name, then index)."""
+    idx, err = resolve_input_device(
+        str(cfg.get("device_name") or ""),
+        str(cfg.get("device_hostapi") or ""),
+        cfg.get("device_index"),
+    )
+    label = str(cfg.get("device_name") or "")
+    rec = AudioRecorder(device_index=idx, device_label=label)
+    if err:
+        rec.last_error = err
+        log(f"[ptt/recorder] {err}")
+    return rec
 
 
 class AudioRecorder:
@@ -112,14 +175,17 @@ class AudioRecorder:
         level = rec.rms_level    # 0.0..1.0 normalised RMS level
     """
 
-    def __init__(self, device_index: int | None = None) -> None:
+    def __init__(self, device_index: int | None = None,
+                 device_label: str = "") -> None:
         self._device = device_index
+        self._device_label = device_label
         self._chunks: list[bytes] = []
         self._lock = threading.Lock()
         self._recording = False
         self._stream = None
         self._rms: float = 0.0
         self._start_time: float = 0.0
+        self.last_error: str = ""
 
     @property
     def rms_level(self) -> float:
@@ -137,30 +203,47 @@ class AudioRecorder:
         return time.monotonic() - self._start_time
 
     def start(self) -> bool:
-        """Begin recording. Returns False if sounddevice unavailable."""
+        """Begin recording. Returns False if the selected device cannot open.
+
+        Never passes PortAudio's default ``-1`` — that raises
+        ``Error querying device -1`` when no default input exists
+        (Bluetooth-only mics are a common case).
+        """
+        self.last_error = ""
         try:
             import sounddevice as sd  # type: ignore[import-untyped]
-        except (ImportError, OSError):
-            log("[ptt/recorder] sounddevice not available")
+        except (ImportError, OSError) as e:
+            self.last_error = f"sounddevice not available: {e}"
+            log(f"[ptt/recorder] {self.last_error}")
+            return False
+        device = self._device
+        if device is None or int(device) < 0:
+            self.last_error = (
+                "cannot open mic: no device selected and PortAudio has "
+                "no default input (pick a device in Радио (PTT))")
+            log(f"[ptt/recorder] start failed: {self.last_error}")
             return False
         with self._lock:
             self._chunks.clear()
         self._rms = 0.0
         self._start_time = time.monotonic()
+        label = self._device_label or f"index={device}"
         try:
             self._stream = sd.RawInputStream(
                 samplerate=SAMPLE_RATE,
                 blocksize=BLOCKSIZE,
-                device=self._device,
+                device=int(device),
                 channels=CHANNELS,
                 dtype=DTYPE,
                 callback=self._audio_callback,
             )
             self._stream.start()
             self._recording = True
+            log(f"[ptt/recorder] started device={label!r} index={device}")
             return True
         except Exception as e:
-            log(f"[ptt/recorder] start failed: {e}")
+            self.last_error = f"cannot open mic {label!r} (index={device}): {e}"
+            log(f"[ptt/recorder] start failed: {self.last_error}")
             return False
 
     def _audio_callback(self, indata: bytes, frames: int,
@@ -190,8 +273,11 @@ class AudioRecorder:
             self._chunks.clear()
         return _pcm_to_wav(raw, SAMPLE_RATE, CHANNELS)
 
-    def set_device(self, device_index: int | None) -> None:
+    def set_device(self, device_index: int | None,
+                   device_label: str = "") -> None:
         self._device = device_index
+        if device_label:
+            self._device_label = device_label
 
 
 def _pcm_to_wav(pcm: bytes, rate: int, channels: int) -> bytes:
