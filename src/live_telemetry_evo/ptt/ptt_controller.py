@@ -70,17 +70,23 @@ class PTTController:
         on_mute_tts: Callable[[bool], None] | None = None,
         mode: PTTMode = PTTMode.HOLD,
         max_duration_s: float = 15.0,
+        wheel_backend: str | None = None,
+        on_held: Callable[[bool], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
     ) -> None:
         self.recorder = recorder or AudioRecorder()
         self.on_audio_captured = on_audio_captured
         self.on_mute_tts = on_mute_tts
         self.mode = mode
         self.max_duration_s = max_duration_s
-        self._input = InputListener()
+        self.on_held = on_held
+        self.on_error = on_error
+        self._input = InputListener(wheel_backend=wheel_backend)
         self._active = False
         self._press_time: float = 0.0
         self._timeout_timer: Optional[threading.Timer] = None
         self._lock = threading.Lock()
+        self.last_error: str = ""
 
     @property
     def binding(self) -> Optional[PTTBinding]:
@@ -97,7 +103,8 @@ class PTTController:
         self.mode = mode
 
     def start(self) -> None:
-        """Start listening for PTT input."""
+        """Start listening for PTT input (independent of iRacing)."""
+        log("[ptt] listener starting (runs with or without iRacing)")
         self._input.start(
             on_press=self._on_press,
             on_release=self._on_release,
@@ -147,10 +154,28 @@ class PTTController:
 
         _play_beep_async(_BEEP_FREQ_START)
 
+        if self.on_held:
+            try:
+                self.on_held(True)
+            except Exception:
+                pass
+
         ok = self.recorder.start()
         if not ok:
-            log("[ptt] recorder failed to start")
+            err = getattr(self.recorder, "last_error", "") or "recorder failed to start"
+            self.last_error = err
+            log(f"[ptt] recorder start failed: {err}")
             self._active = False
+            if self.on_held:
+                try:
+                    self.on_held(False)
+                except Exception:
+                    pass
+            if self.on_error:
+                try:
+                    self.on_error(err)
+                except Exception:
+                    pass
             if self.on_mute_tts:
                 self.on_mute_tts(False)
             return
@@ -175,16 +200,31 @@ class PTTController:
         wav_data = self.recorder.stop()
         duration = time.monotonic() - self._press_time
 
+        if self.on_held:
+            try:
+                self.on_held(False)
+            except Exception:
+                pass
+
         if self.on_mute_tts:
             self.on_mute_tts(False)
 
         if not cancelled and self.on_audio_captured and len(wav_data) > 44:
             _play_beep_async(_BEEP_FREQ_STOP)
-            log(f"[ptt] recording stopped ({duration:.1f}s)")
+            log(f"[ptt] recording stopped ({duration:.1f}s, {len(wav_data)} bytes)")
             self.on_audio_captured(wav_data, duration)
         else:
             if cancelled:
                 log("[ptt] recording cancelled")
+            elif len(wav_data) <= 44:
+                err = "recording empty (mic produced no samples)"
+                self.last_error = err
+                log(f"[ptt] {err}")
+                if self.on_error:
+                    try:
+                        self.on_error(err)
+                    except Exception:
+                        pass
             _play_beep_async(_BEEP_FREQ_STOP)
 
     def _on_timeout(self) -> None:

@@ -37,9 +37,19 @@ def _http_error_body(err: urllib.error.HTTPError) -> str:
         return ""
 
 
-def _request(method: str, url: str, token: str,
-             body: Optional[dict] = None):
-    """Make an HTTP request and return parsed JSON (dict or list)."""
+def prefer_event_type(payload: dict) -> dict:
+    """Copy *payload* sending ``event_type`` (drop the ``type`` alias)."""
+    out = dict(payload)
+    if "event_type" not in out and "type" in out:
+        out["event_type"] = out.pop("type")
+    else:
+        out.pop("type", None)
+    return out
+
+
+def _request_ex(method: str, url: str, token: str,
+                body: Optional[dict] = None) -> tuple[object, int]:
+    """HTTP request returning ``(parsed_json, status_code)``."""
     data = json.dumps(body).encode("utf-8") if body else None
     req = urllib.request.Request(
         url, data=data, method=method,
@@ -50,8 +60,17 @@ def _request(method: str, url: str, token: str,
         },
     )
     with urllib.request.urlopen(req, timeout=_TIMEOUT_S, context=_ctx()) as resp:
+        status = int(getattr(resp, "status", 200) or 200)
         raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw.strip() else {}
+        parsed = json.loads(raw) if raw.strip() else {}
+        return parsed, status
+
+
+def _request(method: str, url: str, token: str,
+             body: Optional[dict] = None):
+    """Make an HTTP request and return parsed JSON (dict or list)."""
+    parsed, _status = _request_ex(method, url, token, body)
+    return parsed
 
 
 def _sanitize_token(token: str) -> str:
@@ -239,19 +258,40 @@ class RaceWorkerClient:
             log(f"[race-worker] post lap failed: {e}")
             return False
 
-    def post_event(self, event_data: dict) -> bool:
+    @property
+    def has_session(self) -> bool:
+        return bool(self._session_id)
+
+    def post_event_result(self, event_data: dict) -> tuple[bool, int, str]:
+        """POST an event. Returns ``(ok, http_status, error)``.
+
+        ``http_status`` is 0 when the request was not sent (no session) or
+        failed without an HTTP response. Payload is sent with
+        ``event_type`` (the ``type`` alias is rewritten, not posted).
+        """
         if not self._session_id:
-            return False
+            return False, 0, "no session"
+        url = f"{self.base_url}/race/sessions/{self._session_id}/events"
+        payload = prefer_event_type(event_data)
         try:
-            url = f"{self.base_url}/race/sessions/{self._session_id}/events"
-            payload = dict(event_data)
-            if "event_type" not in payload and "type" in payload:
-                payload["event_type"] = payload.pop("type")
-            _request("POST", url, self.token, payload)
-            return True
+            _body, status = _request_ex("POST", url, self.token, payload)
+            log(f"[race-worker] post event event_type="
+                f"{payload.get('event_type')} http={status}")
+            return True, status, ""
+        except urllib.error.HTTPError as e:
+            body = _http_error_body(e)
+            err = f"HTTP {e.code}: {e.reason}"
+            if body:
+                err = f"{err} {body}"
+            log(f"[race-worker] post event failed: {err}")
+            return False, int(e.code), err
         except Exception as e:
             log(f"[race-worker] post event failed: {e}")
-            return False
+            return False, 0, str(e)
+
+    def post_event(self, event_data: dict) -> bool:
+        ok, _code, _err = self.post_event_result(event_data)
+        return ok
 
     def poll_messages(self) -> list[dict]:
         if not self._session_id:

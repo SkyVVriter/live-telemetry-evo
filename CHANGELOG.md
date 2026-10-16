@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.15] - 2026-10-16
+
+### Fixed
+- **PTT did nothing outside the Assign dialog**: background polling started only after iRacing connected (`_init_ptt` lived inside `_init_race_engineer`). The listener now starts with the app (iRacing optional, settings closed) and is paused/restarted around the PTT dialog so assign and hold do not fight. Each matching press/release is logged once: `[ptt] down btn=24` / `[ptt] up`.
+- **Mic opened PortAudio default `-1`**: Bluetooth-only setups have no default input (`Error querying device -1`). The recorder now opens the device selected in the UI by persisted name/host API (index is fallback) and refuses `-1` with a clear error on screen and in the log.
+- **Driver feedback POSTed `type`**: the client now sends `event_type` (and still rewrites a leftover `type` alias). Upload logs the HTTP status (`[ptt] upload http=201` / `[ptt] upload failed http=422: …`).
+
+### Added
+- Overlay **PTT lamp**: green while held, red/yellow last error (mic fail, empty recording, upload HTTP error) on the overlay — not only in `session.log`.
+- **rawhid** wheel backend: Windows Raw Input + `HidP_GetUsages`, 128 buttons, FFB-safe (never `CreateFile` / `WriteFile` / XInput / DirectInput Acquire). Default remains **winmm** (read-only `joyGetPosEx`, 32-button mask — the Moza R16 still maps there as the generic 32-button joystick). Buttons 33–128 need `rawhid` (or opt-in DirectInput/pygame, which can invert iRacing FFB).
+
 ## [0.9.0-test.14] - 2026-10-13
 
 ### Fixed
