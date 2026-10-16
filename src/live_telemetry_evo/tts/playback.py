@@ -420,6 +420,8 @@ def run_selftest_audio() -> int:
     * ``[selftest-audio] sounddevice.RawOutputStream: OK``
     * ``[selftest-audio] numpy not required: OK``
     * ``[selftest-audio] overall: PASS``
+
+    Does not open a render stream (WASAPI can block forever on CI).
     """
     results: dict[str, bool] = {}
 
@@ -464,19 +466,8 @@ def run_selftest_audio() -> int:
     # 16 frames * 48000/16000 = 48 frames * 2 bytes
     results["resample"] = (len(up) == 96)
     _p("resample 16000->48000: " + ("OK" if results["resample"] else "FAIL"))
-
-    if sd is not None and results.get("raw_output"):
-        try:
-            native_rate, native_ch = _query_output_caps(sd, None)
-            rate = native_rate or 48000
-            ch = native_ch or 1
-            silence = b"\x00\x00" * (rate // 20) * ch  # 50 ms
-            _write_raw_output_stream(sd, silence, rate=rate, channels=ch, device=None)
-            _p(f"play silence: OK rate={rate} ch={ch}")
-            results["play"] = True
-        except Exception as e:
-            _p(f"play silence: SKIP ({e})")
-            results["play"] = True  # import path is what CI must prove
+    # Do not open a PortAudio stream here: WASAPI on a headless runner
+    # can block in C (GIL held) and freeze the process past the watchdog.
 
     all_ok = all(results.values())
     _p(f"Results: {results}")
