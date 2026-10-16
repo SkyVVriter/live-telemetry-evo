@@ -396,19 +396,32 @@ def _play_sounddevice_wav(
 
 
 def playback_source_is_numpy_free(src: str | None = None) -> bool:
-    """True when the RawOutputStream play helpers never import numpy."""
+    """True when the RawOutputStream play helpers never import numpy.
+
+    Frozen onefile builds often have no ``.py`` next to the bytecode, so
+    the default path inspects ``co_names`` instead of reading the source.
+    """
     if src is None:
-        src = Path(__file__).read_text(encoding="utf-8")
-    if "RawOutputStream" not in src:
+        try:
+            src = Path(__file__).read_text(encoding="utf-8")
+        except Exception:
+            src = ""
+    if src:
+        if "RawOutputStream" not in src:
+            return False
+        start = src.find("def _write_raw_output_stream")
+        end = src.find("def playback_source_is_numpy_free")
+        body = src[start:end] if start >= 0 and end > start else src
+        if "import numpy" in body or "from numpy" in body:
+            return False
+        if "sd.play(" in body or "sounddevice.play(" in body:
+            return False
+        return True
+    names = set(_write_raw_output_stream.__code__.co_names) | set(
+        _play_sounddevice_wav.__code__.co_names)
+    if "numpy" in names:
         return False
-    start = src.find("def _write_raw_output_stream")
-    end = src.find("def playback_source_is_numpy_free")
-    body = src[start:end] if start >= 0 and end > start else src
-    if "import numpy" in body or "from numpy" in body:
-        return False
-    if "sd.play(" in body or "sounddevice.play(" in body:
-        return False
-    return True
+    return "RawOutputStream" in names
 
 
 def run_selftest_audio() -> int:
@@ -423,6 +436,18 @@ def run_selftest_audio() -> int:
 
     Does not open a render stream (WASAPI can block forever on CI).
     """
+    try:
+        return _run_selftest_audio_body()
+    except Exception as e:
+        try:
+            log(f"[selftest-audio] FAIL ({type(e).__name__}: {e})")
+            log("[selftest-audio] overall: FAIL")
+        except Exception:
+            pass
+        return 1
+
+
+def _run_selftest_audio_body() -> int:
     results: dict[str, bool] = {}
 
     def _p(msg: str) -> None:

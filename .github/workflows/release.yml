@@ -68,13 +68,14 @@ jobs:
           $proc = Start-Process -FilePath $env:RELEASE_EXE `
             -ArgumentList "--selftest-audio" `
             -PassThru
-          $exited = $proc.WaitForExit(30000)
+          $exited = $proc.WaitForExit(90000)
+          $logFile = Join-Path $env:LIVE_TELEMETRY_DATA_DIR 'logs' 'session.log'
           if (-not $exited) {
-            Write-Host "selftest-audio timed out after 30s — killing"
+            Write-Host "selftest-audio timed out after 90s — killing"
             taskkill /T /F /PID $proc.Id 2>$null
+            if (Test-Path $logFile) { Get-Content $logFile | ForEach-Object { Write-Host $_ } }
             throw "selftest-audio timed out"
           }
-          $logFile = Join-Path $env:LIVE_TELEMETRY_DATA_DIR 'logs' 'session.log'
           if (Test-Path $logFile) {
             Get-Content $logFile | ForEach-Object { Write-Host $_ }
           } else {

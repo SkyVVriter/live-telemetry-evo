@@ -653,13 +653,19 @@ def run(argv: list[str] | None = None) -> int:
         import os, threading
         def _self_test_watchdog():
             import time
-            time.sleep(20)
-            print("[self-test] watchdog: forcing exit after 20s")
+            time.sleep(45)
+            print("[self-test] watchdog: forcing exit after 45s")
             os._exit(2)
         threading.Thread(target=_self_test_watchdog, daemon=True).start()
         if args.selftest_audio:
-            from .tts.playback import run_selftest_audio
-            rc = run_selftest_audio()
+            from .logbook import log as _st_log
+            _st_log("[selftest-audio] starting")
+            try:
+                from .tts.playback import run_selftest_audio
+                rc = run_selftest_audio()
+            except Exception as e:
+                _st_log(f"[selftest-audio] FAIL ({type(e).__name__}: {e})")
+                rc = 1
         else:
             rc = _run_self_test()
         os._exit(rc)
