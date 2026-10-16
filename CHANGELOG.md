@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0-test.16] - 2026-10-16
+
+### Added
+- **TTS output device** in Радио (PTT): lists Windows render endpoints, persisted by name + host API. Playback uses WASAPI (`sounddevice`) to the selected device and logs which endpoint each play used. `winsound` / `pygame.mixer` cannot select a device (Windows default only) and are skipped when an output is chosen; if the device is missing or fails, playback falls back to the default with a warning.
+- **Mic grace / keep-warm** settings: after PTT release the recorder waits briefly for the first Bluetooth samples (default 0.45 s) then **closes the capture stream promptly** (logged — HFP capture can mute `Headphones (Px7 S3 Stereo)`). Optional keep-warm leaves HFP open for faster short presses; default off so stereo is not held muted.
+
+### Fixed
+- **Duplicate `driver_feedback` POSTs**: one utterance could yield two `POST /events` 201s ~1 s apart (PTT bounce and/or queued retry + live post). Client now posts at most once per normalised transcript in a 4 s window (`idempotency_key` on the payload) and drops a queued copy of the same utterance.
+- **Short Bluetooth PTT empty recording**: `RawInputStream.start()` can return before HFP delivers samples; a ~1 s press then `stop()` produced only a WAV header (`recording empty (mic produced no samples)`). Mic open no longer holds the PTT lock, stop waits for the first callback, and a small bounce debounce ignores a second press right after release.
+
 ## [0.9.0-test.15] - 2026-10-16
 
 ### Fixed

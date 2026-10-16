@@ -14,6 +14,7 @@ from live_telemetry_evo.tts.playback import (
     hidden_run,
     pcm16_to_wav,
     play_audio_file,
+    set_playback_device,
 )
 
 
@@ -35,6 +36,12 @@ class TestPcmToWav:
 
 
 class TestPlayAudioFile:
+    def setup_method(self):
+        set_playback_device("", "", None)
+
+    def teardown_method(self):
+        set_playback_device("", "", None)
+
     def test_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             play_audio_file(tmp_path / "nope.wav")
@@ -74,6 +81,39 @@ class TestPlayAudioFile:
                    side_effect=RuntimeError("no sd")):
             with pytest.raises(RuntimeError, match="all playback backends failed"):
                 play_audio_file(wav)
+
+    def test_selected_device_uses_sounddevice_not_winsound(self, tmp_path):
+        wav = _tiny_wav(tmp_path / "sel.wav")
+        set_playback_device("Headphones (Px7 S3 Stereo)", "Windows WASAPI", 5)
+        with patch("live_telemetry_evo.tts.playback._resolve_output",
+                   return_value=(5, "")), \
+             patch("live_telemetry_evo.tts.playback._play_sounddevice_wav") as sd, \
+             patch("live_telemetry_evo.tts.playback._play_winsound") as ws, \
+             patch("live_telemetry_evo.tts.playback._play_pygame") as pg:
+            play_audio_file(wav)
+        sd.assert_called_once()
+        kwargs = sd.call_args.kwargs
+        assert kwargs.get("device") == 5
+        ws.assert_not_called()
+        pg.assert_not_called()
+
+    def test_missing_selected_device_falls_back_to_winsound(self, tmp_path):
+        wav = _tiny_wav(tmp_path / "fb.wav")
+        set_playback_device("Missing Speaker", "Windows WASAPI", 99)
+        logs: list[str] = []
+        with patch("live_telemetry_evo.tts.playback._resolve_output",
+                   return_value=(None, "not found")), \
+             patch("live_telemetry_evo.tts.playback._play_winsound") as ws, \
+             patch("live_telemetry_evo.tts.playback._play_pygame",
+                   side_effect=RuntimeError("skip")), \
+             patch("live_telemetry_evo.tts.playback.log",
+                   side_effect=lambda m: logs.append(m)), \
+             patch("sys.platform", "win32"):
+            play_audio_file(wav)
+        ws.assert_called_once()
+        joined = "\n".join(logs)
+        assert "WARNING" in joined
+        assert "falling back" in joined.lower() or "WARNING" in joined
 
     def test_source_has_no_powershell_player(self):
         from live_telemetry_evo.tts import edge_engine, elevenlabs_engine, playback

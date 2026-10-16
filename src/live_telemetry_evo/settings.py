@@ -341,6 +341,14 @@ def load_ptt_settings() -> dict:
         binding = dict(binding)
     else:
         binding = None
+    try:
+        mic_grace_s = float(ptt.get("mic_grace_s", 0.45))
+    except (TypeError, ValueError):
+        mic_grace_s = 0.45
+    if mic_grace_s < 0:
+        mic_grace_s = 0.0
+    if mic_grace_s > 2.0:
+        mic_grace_s = 2.0
     return {
         "enabled": bool(ptt.get("enabled", False)),
         "mode": str(ptt.get("mode", "hold")),
@@ -348,6 +356,11 @@ def load_ptt_settings() -> dict:
         "device_index": ptt.get("device_index"),
         "device_name": str(ptt.get("device_name", "")),
         "device_hostapi": str(ptt.get("device_hostapi", "")),
+        "output_device_index": ptt.get("output_device_index"),
+        "output_device_name": str(ptt.get("output_device_name", "")),
+        "output_device_hostapi": str(ptt.get("output_device_hostapi", "")),
+        "mic_grace_s": mic_grace_s,
+        "mic_keep_warm": bool(ptt.get("mic_keep_warm", False)),
         "stt_engine": str(ptt.get("stt_engine", "elevenlabs-scribe")),
         "whisper_api_key": str(ptt.get("whisper_api_key", "")),
         "whisper_model_size": str(ptt.get("whisper_model_size", "base")),

@@ -1238,9 +1238,14 @@ def run(argv: list[str] | None = None) -> int:
         )
 
     _feedback_queue: list[dict] = []
+    from .ptt.feedback import FeedbackDedupe, idempotency_key as _fb_key
+    _feedback_dedupe = FeedbackDedupe()
 
     def _on_driver_feedback(text: str, duration: float, ctx: DriverContext) -> None:
         import time as _time
+        if not _feedback_dedupe.accept(text):
+            return
+        key = _fb_key(text)
         event = {
             "event_type": "driver_feedback",
             "message": text,
@@ -1248,6 +1253,7 @@ def run(argv: list[str] | None = None) -> int:
                 "transcript": text,
                 "audio_duration_s": round(duration, 1),
                 "timestamp": _time.time(),
+                "idempotency_key": key,
                 "lap": ctx.lap,
                 "lap_dist_pct": round(ctx.lap_dist_pct, 4),
                 "corner": ctx.corner_name,
@@ -1261,11 +1267,17 @@ def run(argv: list[str] | None = None) -> int:
                 },
             },
         }
+        # Drop a queued copy of the same utterance so drain + live post
+        # cannot produce two 201s.
+        _feedback_queue[:] = [
+            ev for ev in _feedback_queue
+            if (ev.get("payload") or {}).get("idempotency_key") != key
+        ]
         if _rw_client is not None:
             _drain_feedback_queue()
             ok, code, err = _rw_client.post_event_result(event)
             if ok:
-                log(f"[ptt] upload http={code}")
+                log(f"[ptt] upload http={code} key={key}")
             else:
                 _feedback_queue.append(event)
                 if code:
@@ -1356,6 +1368,8 @@ def run(argv: list[str] | None = None) -> int:
         recorder = recorder_from_ptt_settings(cfg)
         if recorder.last_error:
             _ptt_ui_error(recorder.last_error)
+        from .tts.playback import configure_playback_from_ptt_settings
+        configure_playback_from_ptt_settings(cfg)
         controller = PTTController(
             recorder=recorder,
             on_audio_captured=_on_ptt_audio,
@@ -1365,6 +1379,8 @@ def run(argv: list[str] | None = None) -> int:
             wheel_backend=cfg.get("wheel_backend"),
             on_held=_ptt_ui_held,
             on_error=_ptt_ui_error,
+            mic_grace_s=float(cfg.get("mic_grace_s", 0.45)),
+            mic_keep_warm=bool(cfg.get("mic_keep_warm", False)),
         )
         if binding is not None:
             controller.set_binding(binding)
@@ -1373,10 +1389,13 @@ def run(argv: list[str] | None = None) -> int:
         _ptt_controller = controller
         bind_txt = binding.display_name if binding else "unbound"
         mic = cfg.get("device_name") or f"index={cfg.get('device_index')}"
+        out = cfg.get("output_device_name") or "Windows default"
         log(f"[overlay] PTT started (mode={cfg['mode']}, "
             f"binding={bind_txt}, "
             f"wheel={cfg.get('wheel_backend', 'winmm')}, "
-            f"mic={mic!r})")
+            f"mic={mic!r}, output={out!r}, "
+            f"grace={cfg.get('mic_grace_s', 0.45)}s, "
+            f"keep_warm={bool(cfg.get('mic_keep_warm', False))})")
 
     _ptt_hooks["pause"] = _stop_ptt
     _ptt_hooks["resume"] = _restart_ptt

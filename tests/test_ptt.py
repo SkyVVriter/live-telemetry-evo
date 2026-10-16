@@ -14,7 +14,12 @@ import pytest
 
 from live_telemetry_evo.ptt.recorder import (
     AudioRecorder, _pcm_to_wav, list_input_devices, find_device_by_name,
+    find_output_device_by_name, resolve_output_device,
     AudioDevice,
+)
+from live_telemetry_evo.ptt.feedback import (
+    FeedbackDedupe, idempotency_key, normalize_transcript,
+    post_driver_feedback_once,
 )
 from live_telemetry_evo.ptt.ptt_controller import (
     PTTController, PTTMode, _generate_beep, _MIN_HOLD_DURATION_S,
@@ -647,6 +652,31 @@ class TestPTTSettingsDevicePersistence:
             assert cfg["device_name"] == ""
             assert cfg["device_hostapi"] == ""
             assert cfg["wheel_backend"] == "winmm"
+            assert cfg["output_device_name"] == ""
+            assert cfg["output_device_hostapi"] == ""
+            assert cfg["mic_keep_warm"] is False
+            assert cfg["mic_grace_s"] == 0.45
+        finally:
+            settings._positions_path = orig
+
+    def test_output_device_round_trip(self, tmp_path):
+        from live_telemetry_evo import settings
+        orig = settings._positions_path
+        settings._positions_path = lambda: tmp_path / "positions.json"
+        try:
+            settings.save_ptt_settings(
+                output_device_name="Headphones (Px7 S3 Stereo)",
+                output_device_hostapi="Windows WASAPI",
+                output_device_index=5,
+                mic_grace_s=0.5,
+                mic_keep_warm=True,
+            )
+            cfg = settings.load_ptt_settings()
+            assert cfg["output_device_name"] == "Headphones (Px7 S3 Stereo)"
+            assert cfg["output_device_hostapi"] == "Windows WASAPI"
+            assert cfg["output_device_index"] == 5
+            assert cfg["mic_grace_s"] == 0.5
+            assert cfg["mic_keep_warm"] is True
         finally:
             settings._positions_path = orig
 
@@ -1466,6 +1496,9 @@ class TestPTTStartsWithoutIRacing:
         assert "PTTStatusView" in text
         assert "event_type" in text
         assert '"type": "driver_feedback"' not in text
+        assert "FeedbackDedupe" in text
+        assert "configure_playback_from_ptt_settings" in text
+        assert "idempotency_key" in text
 
 
 class TestPreferEventType:
@@ -1507,3 +1540,159 @@ class TestPostEventResult:
         assert ok is False
         assert code == 422
         assert "422" in msg
+
+
+class TestOutputDeviceListing:
+    def test_find_output_by_name(self):
+        stereo = AudioDevice(
+            index=5, name="Headphones (Px7 S3 Stereo)",
+            max_input_channels=0, max_output_channels=2,
+            default_samplerate=48000, is_default=True,
+            hostapi_name="Windows WASAPI")
+        hfp = AudioDevice(
+            index=6, name="Headset (Px7 S3 Hands-Free AG Audio)",
+            max_input_channels=0, max_output_channels=1,
+            default_samplerate=16000, hostapi_name="MME")
+        with patch("live_telemetry_evo.ptt.recorder.list_output_devices",
+                   return_value=[stereo, hfp]):
+            idx = find_output_device_by_name(
+                "Headphones (Px7 S3 Stereo)", "Windows WASAPI")
+            assert idx == 5
+            idx2, err = resolve_output_device(
+                "Headphones (Px7 S3 Stereo)", "Windows WASAPI", 99)
+            assert err == ""
+            assert idx2 == 5
+
+    def test_empty_selection_is_windows_default(self):
+        idx, err = resolve_output_device("", "", None)
+        assert idx is None
+        assert err == ""
+
+    def test_missing_output_name(self):
+        with patch("live_telemetry_evo.ptt.recorder.list_output_devices",
+                   return_value=[]):
+            idx, err = resolve_output_device("Nope", "", None)
+        assert idx is None
+        assert "not found" in err
+
+
+class TestFeedbackDedupe:
+    def test_one_post_per_utterance(self):
+        dedupe = FeedbackDedupe(window_s=4.0)
+        posts: list[str] = []
+        text = "баланс задний, недокрут в третьем"
+        assert post_driver_feedback_once(text, posts.append, dedupe) is True
+        assert post_driver_feedback_once(text, posts.append, dedupe) is False
+        assert post_driver_feedback_once(
+            "Баланс задний, недокрут в третьем!", posts.append, dedupe) is False
+        assert posts == [text]
+
+    def test_punctuation_and_case_normalise(self):
+        assert normalize_transcript("Hello, World!") == "hello world"
+        assert idempotency_key("Hello, World!") == idempotency_key("hello world")
+
+    def test_different_utterances_both_post(self):
+        dedupe = FeedbackDedupe(window_s=4.0)
+        posts: list[str] = []
+        assert post_driver_feedback_once("alpha", posts.append, dedupe)
+        assert post_driver_feedback_once("bravo", posts.append, dedupe)
+        assert posts == ["alpha", "bravo"]
+
+    def test_same_text_after_window_posts_again(self):
+        dedupe = FeedbackDedupe(window_s=0.05)
+        posts: list[str] = []
+        assert post_driver_feedback_once("same", posts.append, dedupe)
+        time.sleep(0.08)
+        assert post_driver_feedback_once("same", posts.append, dedupe)
+        assert posts == ["same", "same"]
+
+    def test_empty_rejected(self):
+        dedupe = FeedbackDedupe()
+        posts: list[str] = []
+        assert post_driver_feedback_once("   ", posts.append, dedupe) is False
+        assert posts == []
+
+    def test_two_threads_one_post(self):
+        dedupe = FeedbackDedupe(window_s=4.0)
+        posts: list[str] = []
+        barrier = threading.Barrier(2)
+
+        def worker():
+            barrier.wait()
+            post_driver_feedback_once("race", posts.append, dedupe)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert posts == ["race"]
+
+
+class TestRecorderGraceAndClose:
+    def test_stop_waits_for_late_samples(self):
+        rec = AudioRecorder(device_index=0, grace_s=0.4, device_label="BT mic")
+        rec._stream = object()
+        rec._recording = True
+
+        def deliver():
+            time.sleep(0.05)
+            rec._audio_callback(b"\x01\x00" * 32, 32, None, None)
+
+        threading.Thread(target=deliver, daemon=True).start()
+        wav = rec.stop()
+        assert len(wav) > 44
+        assert rec._stream is None
+
+    def test_stop_closes_and_logs_hfp(self):
+        rec = AudioRecorder(device_index=3, grace_s=0.0,
+                            device_label="Headset (Px7 S3 Hands-Free AG Audio)")
+        stream = MagicMock()
+        rec._stream = stream
+        logs: list[str] = []
+        with patch("live_telemetry_evo.ptt.recorder.log",
+                   side_effect=lambda m: logs.append(m)):
+            rec.stop(grace_s=0.0)
+        joined = "\n".join(logs)
+        assert "closed mic promptly" in joined
+        assert "HFP" in joined or "stereo" in joined.lower()
+        stream.stop.assert_called()
+        stream.close.assert_called()
+        assert rec._stream is None
+
+    def test_keep_warm_does_not_close(self):
+        rec = AudioRecorder(device_index=1, grace_s=0.0, keep_warm=True,
+                            device_label="BT mic")
+        stream = MagicMock()
+        rec._stream = stream
+        rec.stop(grace_s=0.0)
+        assert rec._stream is stream
+        stream.stop.assert_not_called()
+        rec.unwarm()
+        assert rec._stream is None
+
+    def test_controller_does_not_hold_lock_during_start(self):
+        started = threading.Event()
+        unblock = threading.Event()
+
+        class SlowRec:
+            last_error = ""
+
+            def start(self):
+                started.set()
+                unblock.wait(timeout=1.0)
+                return True
+
+            def stop(self, grace_s=None):
+                return b"RIFF" + b"\x00" * 100
+
+        ctrl = PTTController(recorder=SlowRec(), mode=PTTMode.HOLD)
+        t = threading.Thread(target=ctrl._on_press, daemon=True)
+        t.start()
+        assert started.wait(timeout=1.0)
+        acquired = ctrl._lock.acquire(timeout=0.3)
+        assert acquired, "PTT lock must not be held while the mic opens"
+        ctrl._lock.release()
+        unblock.set()
+        t.join(timeout=1.0)
+        assert ctrl.is_active

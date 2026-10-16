@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal, QObject
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -29,7 +30,12 @@ from .input_binding import (
     ASSIGN_TIMEOUT_S, PTTBinding, list_joysticks, run_diagnostics,
 )
 from .pygame_joy import get_pygame_worker
-from .recorder import AudioRecorder, list_input_devices, find_device_by_name
+from .recorder import (
+    AudioRecorder,
+    DEFAULT_MIC_GRACE_S,
+    list_input_devices,
+    list_output_devices,
+)
 from .stt import list_stt_engines
 
 
@@ -115,8 +121,30 @@ class PTTSettingsDialog(QDialog):
         refresh_btn.setToolTip("Обновить список устройств")
         refresh_btn.clicked.connect(self._refresh_devices)
         dev_row.addWidget(refresh_btn)
-        audio_layout.addRow("Устройство:", dev_row)
+        audio_layout.addRow("Микрофон:", dev_row)
         self._populate_device_combo(cfg)
+
+        out_row = QHBoxLayout()
+        self._output_combo = QComboBox()
+        self._output_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContents)
+        out_row.addWidget(self._output_combo, 1)
+        out_refresh = QPushButton("⟳")
+        out_refresh.setFixedWidth(32)
+        out_refresh.setToolTip("Обновить список устройств вывода")
+        out_refresh.clicked.connect(self._refresh_output_devices)
+        out_row.addWidget(out_refresh)
+        audio_layout.addRow("Динамик (TTS):", out_row)
+        self._populate_output_combo(cfg)
+        out_hint = QLabel(
+            "winsound всегда играет в Windows default. Выбранный динамик "
+            "использует WASAPI (sounddevice). Пока открыт Bluetooth HFP-микрофон, "
+            "стерео-выход наушников может молчать — поток закрывается сразу "
+            "после отпускания PTT."
+        )
+        out_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
+        out_hint.setWordWrap(True)
+        audio_layout.addRow("", out_hint)
 
         self._level_bar = QProgressBar()
         self._level_bar.setRange(0, 100)
@@ -129,8 +157,32 @@ class PTTSettingsDialog(QDialog):
         self._test_btn.setCheckable(True)
         self._test_btn.clicked.connect(self._on_test_toggle)
         test_layout.addWidget(self._test_btn)
+        self._test_out_btn = QPushButton("Тест динамика")
+        self._test_out_btn.clicked.connect(self._on_test_output)
+        test_layout.addWidget(self._test_out_btn)
         test_layout.addStretch()
         audio_layout.addRow("", test_layout)
+
+        self._grace_spin = QDoubleSpinBox()
+        self._grace_spin.setRange(0.0, 2.0)
+        self._grace_spin.setSingleStep(0.05)
+        self._grace_spin.setDecimals(2)
+        self._grace_spin.setSuffix(" с")
+        self._grace_spin.setValue(float(cfg.get("mic_grace_s", DEFAULT_MIC_GRACE_S)))
+        audio_layout.addRow("Пауза после PTT:", self._grace_spin)
+        grace_hint = QLabel(
+            "Ожидание первых сэмплов Bluetooth после отпускания. "
+            "Короткое PTT (~1 с) иначе может дать пустую запись."
+        )
+        grace_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
+        grace_hint.setWordWrap(True)
+        audio_layout.addRow("", grace_hint)
+
+        self._keep_warm = QCheckBox(
+            "Держать микрофон тёплым (быстрее короткое PTT; "
+            "Bluetooth HFP может выключить стерео)")
+        self._keep_warm.setChecked(bool(cfg.get("mic_keep_warm", False)))
+        audio_layout.addRow("", self._keep_warm)
 
         main.addWidget(audio_group)
 
@@ -346,6 +398,64 @@ class PTTSettingsDialog(QDialog):
         cfg = load_ptt_settings()
         self._populate_device_combo(cfg)
 
+    def _populate_output_combo(self, cfg: dict) -> None:
+        self._output_combo.clear()
+        self._output_devices = list_output_devices()
+        self._output_combo.addItem("(системный по умолчанию)", None)
+        for d in self._output_devices:
+            ha = f" [{d.hostapi_name}]" if d.hostapi_name else ""
+            label = f"{d.name}{ha}" + (" ★" if d.is_default else "")
+            self._output_combo.addItem(label, d.index)
+        saved_name = cfg.get("output_device_name", "")
+        saved_ha = cfg.get("output_device_hostapi", "")
+        if saved_name:
+            for i, d in enumerate(self._output_devices, start=1):
+                if d.name == saved_name and (
+                        not saved_ha or d.hostapi_name == saved_ha):
+                    self._output_combo.setCurrentIndex(i)
+                    break
+        elif cfg.get("output_device_index") is not None:
+            for i in range(self._output_combo.count()):
+                if self._output_combo.itemData(i) == cfg["output_device_index"]:
+                    self._output_combo.setCurrentIndex(i)
+                    break
+
+    def _refresh_output_devices(self) -> None:
+        cfg = load_ptt_settings()
+        self._populate_output_combo(cfg)
+
+    def _selected_output(self) -> tuple[object, str, str]:
+        idx = self._output_combo.currentData()
+        name = ""
+        hostapi = ""
+        combo_idx = self._output_combo.currentIndex() - 1
+        if 0 <= combo_idx < len(self._output_devices):
+            d = self._output_devices[combo_idx]
+            name = d.name
+            hostapi = d.hostapi_name
+            idx = d.index
+        return idx, name, hostapi
+
+    def _on_test_output(self) -> None:
+        idx, name, hostapi = self._selected_output()
+        from ..tts.playback import set_playback_device
+        set_playback_device(name, hostapi, idx)
+        try:
+            from .ptt_controller import _generate_beep, _play_wav_bytes
+            import io
+            import wave
+            pcm = _generate_beep(880, 0.25, 16000)
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(16000)
+                wf.writeframes(pcm)
+            _play_wav_bytes(buf.getvalue())
+            log(f"[ptt/dialog] output test played to {name or 'Windows default'!r}")
+        except Exception as e:
+            log(f"[ptt/dialog] output test failed: {e}")
+
     def _wheel_backend(self) -> str:
         return normalize_wheel_backend(self._backend_combo.currentData())
 
@@ -476,6 +586,7 @@ class PTTSettingsDialog(QDialog):
             dev_name = d.name
             dev_ha = d.hostapi_name
 
+        out_idx, out_name, out_ha = self._selected_output()
         save_ptt_settings(
             enabled=True,
             mode=self._mode_combo.currentData() or "hold",
@@ -483,11 +594,18 @@ class PTTSettingsDialog(QDialog):
             device_index=dev_idx,
             device_name=dev_name,
             device_hostapi=dev_ha,
+            output_device_index=out_idx,
+            output_device_name=out_name,
+            output_device_hostapi=out_ha,
+            mic_grace_s=self._grace_spin.value(),
+            mic_keep_warm=self._keep_warm.isChecked(),
             stt_engine=self._stt_combo.currentText(),
             whisper_api_key=self._api_key_input.text().strip(),
             binding=self._binding_data,
             wheel_backend=self._wheel_backend(),
         )
+        from ..tts.playback import configure_playback_from_ptt_settings
+        configure_playback_from_ptt_settings(load_ptt_settings())
         self.accept()
 
     def closeEvent(self, event) -> None:

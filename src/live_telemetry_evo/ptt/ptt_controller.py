@@ -18,7 +18,7 @@ from typing import Callable, Optional
 
 from ..logbook import log
 from .input_binding import InputListener, PTTBinding
-from .recorder import AudioRecorder
+from .recorder import DEFAULT_MIC_GRACE_S, AudioRecorder
 
 
 class PTTMode(Enum):
@@ -30,6 +30,7 @@ _BEEP_DURATION_S = 0.05
 _BEEP_FREQ_START = 880
 _BEEP_FREQ_STOP = 660
 _MIN_HOLD_DURATION_S = 0.15
+_BOUNCE_DEBOUNCE_S = 0.35
 
 
 def _generate_beep(freq: int, duration: float = _BEEP_DURATION_S,
@@ -61,6 +62,10 @@ class PTTController:
             False when PTT ends (unmute).
         mode: Hold or toggle mode.
         max_duration_s: Maximum recording duration before auto-stop.
+        mic_grace_s: Seconds to wait after PTT release for late
+            Bluetooth samples before closing the mic.
+        mic_keep_warm: If True, leave the capture stream open between
+            utterances (faster short PTT; HFP may mute stereo).
     """
 
     def __init__(
@@ -73,6 +78,8 @@ class PTTController:
         wheel_backend: str | None = None,
         on_held: Callable[[bool], None] | None = None,
         on_error: Callable[[str], None] | None = None,
+        mic_grace_s: float = DEFAULT_MIC_GRACE_S,
+        mic_keep_warm: bool = False,
     ) -> None:
         self.recorder = recorder or AudioRecorder()
         self.on_audio_captured = on_audio_captured
@@ -81,11 +88,21 @@ class PTTController:
         self.max_duration_s = max_duration_s
         self.on_held = on_held
         self.on_error = on_error
+        self.mic_grace_s = max(0.0, float(mic_grace_s))
+        self.mic_keep_warm = bool(mic_keep_warm)
+        if hasattr(self.recorder, "_grace_s"):
+            self.recorder._grace_s = self.mic_grace_s
+        if hasattr(self.recorder, "_keep_warm"):
+            self.recorder._keep_warm = self.mic_keep_warm
         self._input = InputListener(wheel_backend=wheel_backend)
         self._active = False
+        self._stopping = False
         self._press_time: float = 0.0
+        self._last_stop_time: float = 0.0
         self._timeout_timer: Optional[threading.Timer] = None
         self._lock = threading.Lock()
+        self._mic_ready = threading.Event()
+        self._mic_ready.set()
         self.last_error: str = ""
 
     @property
@@ -105,6 +122,11 @@ class PTTController:
     def start(self) -> None:
         """Start listening for PTT input (independent of iRacing)."""
         log("[ptt] listener starting (runs with or without iRacing)")
+        if self.mic_keep_warm:
+            try:
+                self.recorder.warm()
+            except Exception as e:
+                log(f"[ptt] mic warm failed: {e}")
         self._input.start(
             on_press=self._on_press,
             on_release=self._on_release,
@@ -115,6 +137,11 @@ class PTTController:
         self._input.stop()
         if self._active:
             self._stop_recording(cancelled=True)
+        if self.mic_keep_warm:
+            try:
+                self.recorder.unwarm()
+            except Exception:
+                pass
 
     def start_assign(self, callback: Callable[[PTTBinding], None]) -> None:
         """Enter assign mode."""
@@ -124,48 +151,85 @@ class PTTController:
         self._input.stop_assign()
 
     def _on_press(self) -> None:
+        start_now = False
+        stop_toggle = False
         with self._lock:
+            now = time.monotonic()
+            if (now - self._last_stop_time) < _BOUNCE_DEBOUNCE_S:
+                log("[ptt] bounce ignored")
+                return
             if self.mode == PTTMode.HOLD:
-                self._start_recording()
+                if self._active or self._stopping:
+                    return
+                self._active = True
+                self._press_time = now
+                self._mic_ready.clear()
+                start_now = True
             elif self.mode == PTTMode.TOGGLE:
+                if self._stopping:
+                    return
                 if self._active:
-                    self._stop_recording()
+                    stop_toggle = True
                 else:
-                    self._start_recording()
+                    self._active = True
+                    self._press_time = now
+                    self._mic_ready.clear()
+                    start_now = True
+        if stop_toggle:
+            self._stop_recording()
+            return
+        if start_now:
+            self._begin_recording()
 
     def _on_release(self) -> None:
+        do_stop = False
+        cancelled = False
+        elapsed_s = 0.0
         with self._lock:
             if self.mode == PTTMode.HOLD and self._active:
-                elapsed = time.monotonic() - self._press_time
-                if elapsed < _MIN_HOLD_DURATION_S:
-                    log(f"[ptt] press too short ({elapsed:.0f}ms), ignoring")
-                    self._stop_recording(cancelled=True)
-                else:
-                    self._stop_recording()
+                elapsed_s = time.monotonic() - self._press_time
+                cancelled = elapsed_s < _MIN_HOLD_DURATION_S
+                do_stop = True
+        if do_stop:
+            if cancelled:
+                log(f"[ptt] press too short ({elapsed_s * 1000:.0f}ms), ignoring")
+            self._stop_recording(cancelled=cancelled)
 
-    def _start_recording(self) -> None:
-        if self._active:
-            return
-        self._active = True
-        self._press_time = time.monotonic()
+    def _begin_recording(self) -> None:
+        """Open the mic *without* holding ``_lock`` (Bluetooth HFP can block)."""
+        err = ""
+        ok = False
+        try:
+            if self.on_mute_tts:
+                self.on_mute_tts(True)
 
-        if self.on_mute_tts:
-            self.on_mute_tts(True)
+            _play_beep_async(_BEEP_FREQ_START)
 
-        _play_beep_async(_BEEP_FREQ_START)
+            if self.on_held:
+                try:
+                    self.on_held(True)
+                except Exception:
+                    pass
 
-        if self.on_held:
-            try:
-                self.on_held(True)
-            except Exception:
-                pass
+            ok = self.recorder.start()
+            with self._lock:
+                still_held = self._active
+                if not ok:
+                    err = (getattr(self.recorder, "last_error", "")
+                           or "recorder failed to start")
+                    self.last_error = err
+                    log(f"[ptt] recorder start failed: {err}")
+                    self._active = False
+                elif still_held and self.max_duration_s > 0:
+                    self._timeout_timer = threading.Timer(
+                        self.max_duration_s, self._on_timeout)
+                    self._timeout_timer.daemon = True
+                    self._timeout_timer.start()
+                    log("[ptt] recording started")
+        finally:
+            self._mic_ready.set()
 
-        ok = self.recorder.start()
         if not ok:
-            err = getattr(self.recorder, "last_error", "") or "recorder failed to start"
-            self.last_error = err
-            log(f"[ptt] recorder start failed: {err}")
-            self._active = False
             if self.on_held:
                 try:
                     self.on_held(False)
@@ -179,26 +243,26 @@ class PTTController:
             if self.on_mute_tts:
                 self.on_mute_tts(False)
             return
-
-        if self.max_duration_s > 0:
-            self._timeout_timer = threading.Timer(
-                self.max_duration_s, self._on_timeout)
-            self._timeout_timer.daemon = True
-            self._timeout_timer.start()
-
-        log("[ptt] recording started")
+        # If the user already released, `_on_release` is waiting on
+        # `_mic_ready` and will harvest; do not stop twice.
 
     def _stop_recording(self, cancelled: bool = False) -> None:
-        if not self._active:
-            return
-        self._active = False
+        with self._lock:
+            if self._stopping:
+                return
+            self._stopping = True
+            self._active = False
+            self._last_stop_time = time.monotonic()
+            if self._timeout_timer is not None:
+                self._timeout_timer.cancel()
+                self._timeout_timer = None
+            press_time = self._press_time
 
-        if self._timeout_timer is not None:
-            self._timeout_timer.cancel()
-            self._timeout_timer = None
-
-        wav_data = self.recorder.stop()
-        duration = time.monotonic() - self._press_time
+        self._mic_ready.wait(timeout=8.0)
+        wav_data = self.recorder.stop(grace_s=self.mic_grace_s)
+        duration = time.monotonic() - press_time if press_time else 0.0
+        with self._lock:
+            self._stopping = False
 
         if self.on_held:
             try:
@@ -229,9 +293,10 @@ class PTTController:
 
     def _on_timeout(self) -> None:
         with self._lock:
-            if self._active:
-                log(f"[ptt] max duration {self.max_duration_s}s reached")
-                self._stop_recording()
+            if not self._active or self._stopping:
+                return
+        log(f"[ptt] max duration {self.max_duration_s}s reached")
+        self._stop_recording()
 
 
 def _play_beep_async(freq: int) -> None:
@@ -253,23 +318,19 @@ def _play_beep_async(freq: int) -> None:
 
 
 def _play_wav_bytes(wav_bytes: bytes) -> None:
-    """Best-effort WAV playback."""
-    import sys
+    """Best-effort WAV playback through the selected TTS output device."""
     import tempfile
-    import subprocess
     from pathlib import Path
     tmp = Path(tempfile.gettempdir()) / "lte_ptt_beep.wav"
     tmp.write_bytes(wav_bytes)
     try:
-        if sys.platform == "win32":
-            import winsound  # type: ignore[import-error]
-            winsound.PlaySound(str(tmp), winsound.SND_FILENAME)
-        else:
-            for cmd in (["aplay", str(tmp)], ["ffplay", "-nodisp", "-autoexit", str(tmp)]):
-                try:
-                    subprocess.run(cmd, timeout=3, capture_output=True, check=True)
-                    return
-                except (FileNotFoundError, subprocess.CalledProcessError):
-                    continue
+        from ..tts.playback import play_audio_file
+        play_audio_file(tmp)
     except Exception:
-        pass
+        try:
+            import sys
+            if sys.platform == "win32":
+                import winsound  # type: ignore[import-error]
+                winsound.PlaySound(str(tmp), winsound.SND_FILENAME)
+        except Exception:
+            pass
